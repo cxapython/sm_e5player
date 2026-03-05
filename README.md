@@ -4,6 +4,11 @@
 
 ## 功能特性
 
+- **歌曲浏览器界面**: 相册式左右滑动浏览，每页显示8首歌曲
+- **悬浮音频预览**: 鼠标悬停自动播放歌曲预览
+- **封面图片展示**: 自动加载 bn.jpg/banner.jpg 等封面图片
+- **星级显示**: 解析目录名中的星级信息（格式：`前缀#歌名#星级`）
+- **路径记忆**: 首次指定扫描路径后自动保存，后续启动自动加载
 - **直接播放 SM 谱面**: 无需转换格式，直接解析 `.sm` 文件
 - **自动音频识别**: 自动加载谱面同目录的音频文件（支持 mp3/ogg/wav）
 - **封面背景支持**: 自动加载 `bn.jpg`、`banner.jpg` 等封面图片作为背景
@@ -20,12 +25,12 @@
 ### 环境要求
 
 - Python 3.8+
-- 依赖库：`pygame`, `customtkinter`
+- 依赖库：`pygame`, `customtkinter`, `Pillow`
 
 ### 安装依赖
 
 ```bash
-pip install pygame customtkinter
+pip install pygame customtkinter Pillow
 
 # 可选：支持拖拽功能
 pip install tkinterdnd2
@@ -34,16 +39,39 @@ pip install tkinterdnd2
 ### 运行
 
 ```bash
+python main.py
+```
+
+或使用歌曲选择界面：
+
+```bash
+python main.py
+```
+
+直接播放单个谱面文件：
+
+```bash
 python sm_arrow_player.py
 ```
 
 ### 使用方法
 
-1. 启动程序后，拖入 `.sm` 谱面文件到窗口，或点击"浏览文件"选择
-2. 程序自动识别同目录的音频文件和封面图片
-3. 按空格键开始/暂停播放
+1. 启动程序后，首次运行会提示选择歌曲目录
+2. 在歌曲浏览器中，鼠标悬停可预览音频，点击封面可进入谱面播放
+3. 使用左右按钮或键盘左右键切换页面
+4. 播放器中按空格键开始/暂停播放
 
 ## 快捷键
+
+### 歌曲浏览器
+
+| 按键 | 功能 |
+|------|------|
+| `←` / `→` | 上一页/下一页 |
+| 鼠标悬停 | 预览音频 |
+| 点击封面 | 进入谱面播放 |
+
+### 谱面播放器
 
 | 按键 | 功能 |
 |------|------|
@@ -61,38 +89,80 @@ python sm_arrow_player.py
 
 ```
 sm_e5player/
-├── sm_arrow_player.py      # 主程序文件（单文件架构）
-├── noteskin/               # 皮肤资源目录
+├── main.py                  # 主程序入口（歌曲浏览器）
+├── config_manager.py        # 配置管理模块
+├── directory_parser.py      # 目录/资源解析模块
+├── song_scanner.py          # 歌曲扫描模块
+├── ui_components.py         # UI组件模块
+├── audio_player.py          # 音频预览模块
+├── sm_arrow_player.py       # 谱面播放器核心
+├── config.json              # 配置文件（自动生成）
+├── noteskin/                # 皮肤资源目录
 │   ├── Center Tap Note (doubleres) 3x2.png
 │   ├── Center Hold Body active (doubleres) 6x1.png
 │   ├── Center Hold BottomCap active (doubleres) 6x1.png
 │   ├── Center Ready Receptor (doubleres) 1x3.png
-│   ├── UpLeft ...          # 左上轨道皮肤
-│   ├── UpRight ...         # 右上轨道皮肤
-│   ├── DownLeft ...        # 左下轨道皮肤
-│   ├── DownRight ...       # 右下轨道皮肤
-│   └── metrics.ini         # 皮肤配置（可选）
-├── songs/                  # 谱面目录（示例）
+│   ├── UpLeft ...           # 左上轨道皮肤
+│   ├── UpRight ...          # 右上轨道皮肤
+│   ├── DownLeft ...         # 左下轨道皮肤
+│   ├── DownRight ...        # 右下轨道皮肤
+│   └── metrics.ini          # 皮肤配置（可选）
+├── songs/                   # 谱面目录
 │   └── [歌曲名]/
-│       ├── *.sm            # 谱面文件
-│       ├── *.mp3/ogg/wav   # 音频文件
-│       └── bn.jpg          # 封面图片（可选）
+│       ├── *.sm             # 谱面文件
+│       ├── *.mp3/ogg/wav    # 音频文件
+│       └── bn.jpg           # 封面图片（可选）
 └── README.md
 ```
 
+## 模块说明
+
+| 模块 | 职责 |
+|------|------|
+| `main.py` | 程序入口，整合所有模块，实现歌曲浏览和播放功能 |
+| `config_manager.py` | 配置文件读写，保存路径、音量、页码等设置 |
+| `directory_parser.py` | 解析目录名称、提取星级信息、查找资源文件 |
+| `song_scanner.py` | 扫描指定目录下的所有歌曲文件夹 |
+| `ui_components.py` | UI组件，包括歌曲卡片和浏览器主界面 |
+| `audio_player.py` | 音频预览播放，支持悬停延迟播放 |
+| `sm_arrow_player.py` | 谱面播放器核心，解析SM文件并渲染游戏画面 |
+
 ## 架构说明
 
-### 核心类
+### 整体架构
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      LauncherUI (启动界面)                    │
-│  - 拖拽/选择 SM 文件                                          │
-│  - 自动查找音频和封面                                          │
-│  - 启动 ArrowPlayer                                           │
+│                      SMPlayerApp (主应用)                     │
+│  - 首次运行路径选择                                            │
+│  - 歌曲浏览器界面                                              │
+│  - 播放器启动                                                  │
 └─────────────────────────────────────────────────────────────┘
                               │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+     │ConfigManager│  │ SongScanner │  │AudioPreview │
+     │  配置管理    │  │  歌曲扫描    │  │  音频预览   │
+     └─────────────┘  └─────────────┘  └─────────────┘
+                              │
                               ▼
+                     ┌─────────────┐
+                     │ SongBrowser │
+                     │  歌曲浏览器  │
+                     │  (UI组件)   │
+                     └─────────────┘
+                              │
+                              ▼
+                     ┌─────────────┐
+                     │ ArrowPlayer │
+                     │  谱面播放器  │
+                     └─────────────┘
+```
+
+### 谱面播放器核心类
+
+```
 ┌─────────────────────────────────────────────────────────────┐
 │                     ArrowPlayer (播放器核心)                   │
 │                                                              │
@@ -133,6 +203,20 @@ SM文件 → parse_sm_file() → SmChartInfo + SmNotesBlock
               输入处理         时间更新         画面渲染
            (按键判定)      (箭头位置计算)   (皮肤+动画绘制)
 ```
+
+### 目录命名规范
+
+歌曲目录名支持 `#` 分隔格式，用于显示星级：
+
+```
+SPEED_DEVIL#PLAY_js_2106#8
+     ↑           ↑        ↑
+   前缀        歌名     星级
+
+显示效果：PLAY_js_2106  ★☆☆☆☆ 8
+```
+
+无 `#` 分隔的目录名则直接显示，不显示星级。
 
 ### SM 文件解析
 
@@ -226,7 +310,8 @@ Beginner:
 | 库 | 用途 |
 |---|------|
 | pygame | 游戏引擎、渲染、音频播放 |
-| customtkinter | 启动界面 UI |
+| customtkinter | 歌曲浏览器 UI |
+| Pillow | 封面图片处理 |
 | tkinterdnd2 | 拖拽文件支持（可选） |
 
 ## 许可证
