@@ -411,12 +411,44 @@ def format_seconds(sec: float) -> str:
 
 def safe_load_chinese_font(font_size: int) -> pygame.font.Font:
     """安全加载中文字体，失败则使用pygame默认字体"""
-    try:
+    import platform
+    font_path = None
+
+    # 根据操作系统选择字体路径
+    system = platform.system()
+    if system == "Windows":
         font_path = r"C:\Windows\Fonts\msyh.ttc"
-        if os.path.exists(font_path):
+    elif system == "Darwin":  # macOS
+        # Mac 中文字体优先级：苹方 > 黑体
+        mac_fonts = [
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ]
+        for fp in mac_fonts:
+            if os.path.exists(fp):
+                font_path = fp
+                break
+    elif system == "Linux":
+        # Linux 常见中文字体
+        linux_fonts = [
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ]
+        for fp in linux_fonts:
+            if os.path.exists(fp):
+                font_path = fp
+                break
+
+    # 尝试加载字体
+    if font_path and os.path.exists(font_path):
+        try:
             return pygame.font.Font(font_path, font_size)
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+    # 兜底：使用pygame默认字体
     return pygame.font.Font(None, font_size)
 
 # ========================= 皮肤资源类 =========================
@@ -612,18 +644,20 @@ class ArrowPlayer:
                 return os.path.join(sys._MEIPASS, relative_path)
             # 开发时，使用当前目录
             return os.path.join(os.path.abspath("."), relative_path)
-        
+
         # 修正皮肤目录路径（优先用打包的noteskin）
         self.skin_dir = get_resource_path("noteskin") if os.path.exists(get_resource_path("noteskin")) else skin_dir
-        
+
         # 其他原有代码不变...
         # 基础路径
         self.sm_path = sm_path
-        self.audio_path = audio_path or find_audio_in_same_dir(sm_path, AUDIO_EXT_PRIORITY)
+        self.audio_path = audio_path or find_audio_in_same_dir(sm_path)
         self.skin_dir = skin_dir
-        # 窗口配置
-        self.window_w = 960
-        self.window_h = 900
+        # 窗口配置（可调节）
+        self.window_w = 1100
+        self.window_h = 800
+        self.min_window_w = 800
+        self.min_window_h = 600
         self.fps = 60
         self.scroll_speed = 420.0 * 2.0
         # 谱面解析配置
@@ -650,7 +684,11 @@ class ArrowPlayer:
         self.screen: Optional[pygame.Surface] = None
         self.font = None
         self.small_font = None
+        self.title_font = None
         self.skin = SkinResource(self.skin_dir)
+        # 封面背景
+        self.banner_surf: Optional[pygame.Surface] = None
+        self.banner_path: Optional[str] = None
         # 皮肤图缓存
         self.tap_surfs: List[Optional[pygame.Surface]] = [None] * 5
         self.hold_body_surfs: List[Optional[pygame.Surface]] = [None] * 5
@@ -660,6 +698,31 @@ class ArrowPlayer:
         self.judge_light: List[float] = [0.0] * 5
         self.judge_light_decay = 2.8  # 判定光每秒衰减值
         self.last_chart_sec = 0.0
+        # ========== 按键状态（用于Receptor按压效果）==========
+        self.key_pressed: List[bool] = [False] * 5  # 各轨道按键是否按下
+        # ========== 箭头消失动画 ==========
+        # 记录命中动画：{arrow_idx: {"alpha": 1.0, "scale": 1.0, "time": 动画时长}}
+        self.hit_animations: Dict[int, dict] = {}
+        self.hit_animation_duration = 0.25  # 命中动画时长（秒）
+        # ========== 判定系统 ==========
+        # 判定窗口（秒）
+        self.judge_window_perfect = 0.045  # PERFECT窗口
+        self.judge_window_good = 0.090     # GOOD窗口
+        self.judge_window_bad = 0.135      # BAD窗口
+        # MISS窗口：超过bad窗口即miss
+        # 分数与连击
+        self.score = 0
+        self.combo = 0
+        self.max_combo = 0
+        # 判定统计
+        self.judge_count = {"PERFECT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
+        # 判定结果显示
+        self.judge_display_text = ""       # 当前显示的判定文字
+        self.judge_display_time = 0.0      # 判定文字显示剩余时间
+        self.judge_display_duration = 0.8  # 判定文字显示时长（秒）
+        # 箭头状态：记录已处理的箭头（用于判定和miss检测）
+        # 状态：0=未处理, 1=已命中, 2=已miss
+        self.arrow_states: Dict[int, int] = {}  # key: arrow_events索引, value: 状态
 
     def load_sm(self):
         """加载并解析SM文件，生成播放所需的箭头事件"""
@@ -706,6 +769,23 @@ class ArrowPlayer:
         self.arrow_events = build_arrow_events(self.event_table, self.timeline_segments, self.tick_per_beat, self.atype_map)
         self._reset_hit_pointer(self.cur_chart_sec)
 
+    def _load_banner(self):
+        """加载谱面封面图片（bn.jpg或banner.jpg）"""
+        if not self.sm_path:
+            return
+        sm_dir = os.path.dirname(os.path.abspath(self.sm_path))
+        # 尝试多种封面文件名
+        banner_names = ["bn.jpg", "banner.jpg", "BN.jpg", "Banner.jpg", "bn.png", "bann.jpg"]
+        for name in banner_names:
+            banner_path = os.path.join(sm_dir, name)
+            if os.path.exists(banner_path):
+                try:
+                    self.banner_surf = pygame.image.load(banner_path).convert_alpha()
+                    self.banner_path = banner_path
+                    return
+                except Exception:
+                    pass
+
     def init_pygame(self):
         """初始化Pygame环境、音频、皮肤"""
         pygame.init()
@@ -715,21 +795,36 @@ class ArrowPlayer:
             pygame.mixer.init()
         except Exception:
             self.audio_path = None
-        # 创建窗口
-        self.screen = pygame.display.set_mode((self.window_w, self.window_h))
-        pygame.display.set_caption("SM Arrow Player (直接播放SM谱面)")
+        # 创建可调节大小的窗口
+        self.screen = pygame.display.set_mode(
+            (self.window_w, self.window_h),
+            pygame.RESIZABLE
+        )
+        pygame.display.set_caption("SM Arrow Player")
         # 加载字体
-        self.font = safe_load_chinese_font(20)
-        self.small_font = safe_load_chinese_font(16)
+        self.font = safe_load_chinese_font(18)
+        self.small_font = safe_load_chinese_font(14)
+        self.title_font = safe_load_chinese_font(24)
         # 加载皮肤
         self.skin.open()
         self._load_skin_surfs()
+        # 加载封面
+        self._load_banner()
         # 加载音频
         if self.audio_path and os.path.exists(self.audio_path):
             try:
                 pygame.mixer.music.load(self.audio_path)
             except Exception:
                 self.audio_path = None
+
+    def handle_resize(self, new_w: int, new_h: int):
+        """处理窗口大小改变"""
+        self.window_w = max(self.min_window_w, new_w)
+        self.window_h = max(self.min_window_h, new_h)
+        self.screen = pygame.display.set_mode(
+            (self.window_w, self.window_h),
+            pygame.RESIZABLE
+        )
 
     def _load_skin_surfs(self):
         """加载所有轨道的皮肤图"""
@@ -747,6 +842,9 @@ class ArrowPlayer:
         self.start_sys_sec = time.perf_counter() - self.pause_chart_sec
         self.last_chart_sec = self.pause_chart_sec
         self._reset_hit_pointer(self.pause_chart_sec)
+        # 如果从头开始播放，重置判定状态
+        if self.pause_chart_sec < 0.5:
+            self._reset_judge_state()
         # 播放音频，偏移校准
         if self.audio_path:
             audio_start = max(0.0, self.pause_chart_sec - self.offset)
@@ -774,6 +872,8 @@ class ArrowPlayer:
         self.pause_chart_sec = new_sec
         self.last_chart_sec = new_sec
         self._reset_hit_pointer(new_sec)
+        # 重置判定状态（跳转时清空）
+        self._reset_judge_state()
         # 同步音频
         if self.is_playing:
             self.start_sys_sec = time.perf_counter() - new_sec
@@ -809,6 +909,114 @@ class ArrowPlayer:
         for i in range(len(self.judge_light)):
             self.judge_light[i] = max(0.0, self.judge_light[i] - decay)
 
+    def _reset_judge_state(self):
+        """重置判定状态（重新播放时调用）"""
+        self.score = 0
+        self.combo = 0
+        self.max_combo = 0
+        self.judge_count = {"PERFECT": 0, "GOOD": 0, "BAD": 0, "MISS": 0}
+        self.judge_display_text = ""
+        self.judge_display_time = 0.0
+        self.arrow_states = {}
+        self.hit_animations = {}
+        self.key_pressed = [False] * 5
+
+    def _try_judge_arrow(self, track_idx: int):
+        """尝试判定指定轨道上的箭头，返回是否命中"""
+        cur_sec = self.cur_chart_sec
+        # 查找该轨道上最近的可判定箭头
+        best_idx = -1
+        best_diff = float('inf')
+        for i, event in enumerate(self.arrow_events):
+            # 跳过不同轨道、已处理、长按的箭头
+            if event.track_idx != track_idx:
+                continue
+            if i in self.arrow_states:
+                continue
+            # 只判定点按箭头（长按暂时简化为点按处理）
+            time_diff = abs(event.start_sec - cur_sec)
+            # 在BAD窗口内才考虑
+            if time_diff <= self.judge_window_bad and time_diff < best_diff:
+                best_diff = time_diff
+                best_idx = i
+        if best_idx < 0:
+            return False
+        # 判定结果
+        event = self.arrow_events[best_idx]
+        if best_diff <= self.judge_window_perfect:
+            judge_result = "PERFECT"
+            score_add = 100
+            self.combo += 1
+        elif best_diff <= self.judge_window_good:
+            judge_result = "GOOD"
+            score_add = 50
+            self.combo += 1
+        else:
+            judge_result = "BAD"
+            score_add = 10
+            self.combo = 0
+        # 更新状态
+        self.arrow_states[best_idx] = 1  # 已命中
+        # 启动命中动画
+        self.hit_animations[best_idx] = {
+            "alpha": 1.0,
+            "scale": 1.0,
+            "time": self.hit_animation_duration,
+            "track_idx": track_idx,
+            "y": (event.start_sec - cur_sec) * self.scroll_speed  # 相对判定线的Y偏移
+        }
+        self.score += score_add
+        self.max_combo = max(self.max_combo, self.combo)
+        self.judge_count[judge_result] += 1
+        self.judge_display_text = judge_result
+        self.judge_display_time = self.judge_display_duration
+        self._trigger_judge_light(track_idx)
+        return True
+
+    def _check_missed_arrows(self):
+        """检测并处理已错过判定窗口的箭头（MISS）"""
+        cur_sec = self.cur_chart_sec
+        for i, event in enumerate(self.arrow_events):
+            if i in self.arrow_states:
+                continue
+            # 箭头已经离开BAD窗口（过了判定线太多）
+            if event.start_sec < cur_sec - self.judge_window_bad:
+                self.arrow_states[i] = 2  # 已miss
+                self.judge_count["MISS"] += 1
+                self.combo = 0
+                self.judge_display_text = "MISS"
+                self.judge_display_time = self.judge_display_duration
+
+    def _update_hit_animations(self, dt: float):
+        """更新命中动画状态"""
+        to_remove = []
+        for idx, anim in self.hit_animations.items():
+            anim["time"] -= dt
+            if anim["time"] <= 0:
+                to_remove.append(idx)
+            else:
+                # 动画进度 0->1
+                progress = 1.0 - (anim["time"] / self.hit_animation_duration)
+                # 淡出 + 缩放
+                anim["alpha"] = 1.0 - progress
+                anim["scale"] = 1.0 + progress * 0.3  # 放大到1.3倍
+        for idx in to_remove:
+            del self.hit_animations[idx]
+
+    def _update_key_states(self):
+        """更新按键状态（用于Receptor按压效果）"""
+        # 轨道映射：Q=左上(1), E=右上(3), S=中间(2), Z=左下(0), C=右下(4)
+        key_map = {
+            pygame.K_q: 1,   # UpLeft
+            pygame.K_e: 3,   # UpRight
+            pygame.K_s: 2,   # Center
+            pygame.K_z: 0,   # DownLeft
+            pygame.K_c: 4,   # DownRight
+        }
+        keys = pygame.key.get_pressed()
+        for key, track_idx in key_map.items():
+            self.key_pressed[track_idx] = keys[key]
+
     def main_loop(self) -> str:
         """播放器主循环，返回结束原因：finished/closed"""
         clock = pygame.time.Clock()
@@ -817,12 +1025,16 @@ class ArrowPlayer:
         while running:
             dt = clock.tick(self.fps) / 1000.0
             self._update_judge_light(dt)
+            self._update_hit_animations(dt)
+            self._update_key_states()
             # 处理事件
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.end_reason = "closed"
                     running = False
-                if event.type == pygame.KEYDOWN:
+                elif event.type == pygame.VIDEORESIZE:
+                    self.handle_resize(event.w, event.h)
+                elif event.type == pygame.KEYDOWN:
                     self._handle_keydown(event.key)
             # 播放逻辑
             if self.is_playing:
@@ -846,6 +1058,21 @@ class ArrowPlayer:
 
     def _handle_keydown(self, key):
         """处理键盘按键事件"""
+        # 游戏按键：尝试判定对应轨道的箭头
+        # 轨道映射：Q=左上(1), E=右上(3), S=中间(2), Z=左下(0), C=右下(4)
+        track_key_map = {
+            pygame.K_q: 1,   # UpLeft (左上)
+            pygame.K_e: 3,   # UpRight (右上)
+            pygame.K_s: 2,   # Center (中间)
+            pygame.K_z: 0,   # DownLeft (左下)
+            pygame.K_c: 4,   # DownRight (右下)
+        }
+        if key in track_key_map:
+            if self.is_playing:
+                self._try_judge_arrow(track_key_map[key])
+            return
+
+        # 功能按键
         if key == pygame.K_ESCAPE:
             self.end_reason = "closed"
         elif key == pygame.K_SPACE:
@@ -882,64 +1109,200 @@ class ArrowPlayer:
         """更新播放状态，计算当前时间并检测箭头命中"""
         self.last_chart_sec = self.cur_chart_sec
         self.cur_chart_sec = time.perf_counter() - self.start_sys_sec
-        # 检测箭头命中，触发判定光
-        while self.next_hit_idx < len(self.arrow_events):
-            event = self.arrow_events[self.next_hit_idx]
-            if event.start_sec <= self.cur_chart_sec:
-                self._trigger_judge_light(event.track_idx)
-                self.next_hit_idx += 1
+        # 检测错过的箭头（MISS）
+        self._check_missed_arrows()
+        # 更新判定文字显示时间
+        if self.judge_display_time > 0:
+            self.judge_display_time -= dt
+
+    def _draw_background(self):
+        """绘制背景（封面或纯色）"""
+        if self.banner_surf:
+            # 绘制封面背景（缩放适应窗口，保持比例）
+            banner_w, banner_h = self.banner_surf.get_size()
+            window_ratio = self.window_w / self.window_h
+            banner_ratio = banner_w / banner_h
+
+            if window_ratio > banner_ratio:
+                # 窗口更宽，以宽度为准
+                scale = self.window_w / banner_w
             else:
-                break
+                # 窗口更高，以高度为准
+                scale = self.window_h / banner_h
+
+            new_w = int(banner_w * scale)
+            new_h = int(banner_h * scale)
+            scaled_banner = pygame.transform.smoothscale(self.banner_surf, (new_w, new_h))
+
+            # 居中绘制
+            x_offset = (self.window_w - new_w) // 2
+            y_offset = (self.window_h - new_h) // 2
+            self.screen.blit(scaled_banner, (x_offset, y_offset))
+
+            # 覆盖半透明深色遮罩，确保内容可见
+            overlay = pygame.Surface((self.window_w, self.window_h), pygame.SRCALPHA)
+            overlay.fill((10, 10, 15, 200))  # 深色遮罩，透明度200/255
+            self.screen.blit(overlay, (0, 0))
+        else:
+            # 无封面时使用渐变背景
+            self.screen.fill((12, 12, 18))
+            # 绘制微妙的渐变效果
+            for i in range(0, self.window_h, 4):
+                alpha = int(20 * (1 - i / self.window_h))
+                color = (15 + alpha // 4, 15 + alpha // 4, 25 + alpha // 2)
+                pygame.draw.line(self.screen, color, (0, i), (self.window_w, i))
 
     def draw(self):
         """绘制播放器所有画面元素"""
         assert self.screen is not None and self.font is not None and self.small_font is not None
-        # 背景色
-        self.screen.fill((15, 15, 18))
-        # 绘制顶部操作提示
-        tip_text = "空格：暂停/继续  R：重播  ←/→：快退快进  T：切tick  M：切映射  -/=:调offset  [/]:调速度  Esc：退出"
-        self.screen.blit(self.small_font.render(tip_text, True, (255, 220, 160)), (18, 10))
-        # 固定坐标
-        info_y1, info_y2, info_y3 = 34, 58, 80
-        top_y, judge_y, bottom_y = 120, 210, self.window_h - 74
+
+        # 绘制背景（封面或纯色）
+        self._draw_background()
+
+        # 动态计算布局（适应窗口大小）
+        margin = 20
         track_count = 5
-        track_total_w = 620
+        track_total_w = min(620, self.window_w - 280)  # 留出左右空间
+        track_total_w = max(400, track_total_w)
         track_start_x = (self.window_w - track_total_w) // 2
         single_track_w = track_total_w // track_count
 
+        # 顶部区域
+        header_h = 80
+        # 判定线位置（窗口高度的25%位置，更靠上）
+        judge_y = int(self.window_h * 0.18) + header_h
+        # 底部区域
+        footer_h = 50
+
+        top_y = header_h
+        bottom_y = self.window_h - footer_h
+
         # 绘制轨道背景
-        for i in range(track_count):
-            x = track_start_x + i * single_track_w
-            # 轨道底色
-            pygame.draw.rect(
-                self.screen, (28, 28, 34),
-                (x + 3, top_y, single_track_w - 6, bottom_y - top_y),
-                border_radius=14
-            )
-            # 轨道边框
-            pygame.draw.rect(
-                self.screen, (45, 45, 55),
-                (x + 3, top_y, single_track_w - 6, bottom_y - top_y),
-                width=2, border_radius=14
-            )
+        self._draw_track_background(track_start_x, top_y, track_total_w, bottom_y - top_y, single_track_w, track_count)
+
         # 绘制判定线
         pygame.draw.line(
-            self.screen, (220, 220, 220),
-            (track_start_x, judge_y), (track_start_x + track_total_w, judge_y), 2
+            self.screen, (200, 200, 210),
+            (track_start_x - 10, judge_y), (track_start_x + track_total_w + 10, judge_y), 3
         )
+        # 判定线光晕
+        for i in range(3):
+            alpha = 60 - i * 15
+            glow_surf = pygame.Surface((track_total_w + 20, 8), pygame.SRCALPHA)
+            pygame.draw.rect(glow_surf, (255, 255, 255, alpha), (0, 0, track_total_w + 20, 8))
+            self.screen.blit(glow_surf, (track_start_x - 10, judge_y - 4 + i * 2))
+
         # 绘制判定区+判定光
         for i in range(track_count):
             self._draw_receptor(i, track_start_x, single_track_w, judge_y)
-        # 绘制顶部信息
-        self._draw_top_info(info_y1, info_y2, info_y3)
+
+        # 绘制顶部信息栏
+        self._draw_header(track_start_x, track_total_w, header_h)
+
         # 绘制箭头（点按+长按）
         self._draw_arrows(track_start_x, single_track_w, judge_y, bottom_y, top_y)
+
+        # 绘制判定结果（中央大字）
+        self._draw_judge_display(judge_y)
+
+        # 绘制判定统计（右侧面板）
+        self._draw_stats_panel(track_start_x + track_total_w + 15, header_h + 20)
+
+        # 绘制底部提示
+        self._draw_footer_tips(bottom_y + 10)
+
         # 绘制tick匹配疑点提示
-        self._draw_tick_tip(bottom_y)
+        self._draw_tick_tip(bottom_y + 35)
+
+    def _draw_track_background(self, start_x: int, start_y: int, width: int, height: int, single_w: int, count: int):
+        """绘制轨道背景"""
+        for i in range(count):
+            x = start_x + i * single_w
+            # 轨道底色（渐变效果）
+            track_surf = pygame.Surface((single_w - 4, height), pygame.SRCALPHA)
+            base_alpha = 80 + (i % 2) * 15  # 交替亮度
+            track_surf.fill((25, 25, 35, base_alpha))
+            self.screen.blit(track_surf, (x + 2, start_y))
+
+            # 轨道边框（微妙发光）
+            border_color = (50, 50, 65) if i % 2 == 0 else (55, 55, 70)
+            pygame.draw.rect(
+                self.screen, border_color,
+                (x + 2, start_y, single_w - 4, height),
+                width=1, border_radius=8
+            )
+
+    def _draw_header(self, track_start_x: int, track_total_w: int, header_h: int):
+        """绘制顶部信息栏"""
+        # 标题背景
+        header_surf = pygame.Surface((self.window_w - 40, header_h - 10), pygame.SRCALPHA)
+        header_surf.fill((20, 20, 28, 180))
+        self.screen.blit(header_surf, (20, 10))
+
+        # 谱面标题
+        if self.title_font:
+            sm_name = os.path.basename(self.sm_path)
+            title_surf = self.title_font.render(sm_name, True, (240, 240, 250))
+            self.screen.blit(title_surf, (30, 18))
+
+        # 音频文件
+        if self.font:
+            audio_name = os.path.basename(self.audio_path) if self.audio_path else "无音频"
+            audio_surf = self.font.render(f"音频: {audio_name}", True, (150, 180, 200))
+            self.screen.blit(audio_surf, (30, 50))
+
+        # 时间和状态
+        cur_sec = self.cur_chart_sec
+        time_str = f"{format_seconds(cur_sec)} / {format_seconds(self.total_chart_sec)}"
+        status_str = "播放中" if self.is_playing else "已暂停"
+        status_color = (100, 255, 150) if self.is_playing else (255, 200, 100)
+
+        if self.font:
+            time_surf = self.font.render(time_str, True, (200, 200, 210))
+            self.screen.blit(time_surf, (30, 72))
+
+            status_surf = self.font.render(status_str, True, status_color)
+            self.screen.blit(status_surf, (200, 72))
+
+        # 右侧参数信息
+        if self.small_font:
+            params = [
+                f"速度: {int(self.scroll_speed)}",
+                f"Offset: {self.offset:+.2f}s",
+                f"Tick: {self.tick_per_beat}"
+            ]
+            for i, param in enumerate(params):
+                param_surf = self.small_font.render(param, True, (140, 140, 160))
+                self.screen.blit(param_surf, (self.window_w - 120, 18 + i * 22))
 
     def _draw_receptor(self, track_idx: int, track_start_x: int, single_track_w: int, judge_y: int):
         """绘制指定轨道的判定区和判定光"""
         center_x = track_start_x + track_idx * single_track_w + single_track_w // 2
+
+        # 检测是否有箭头接近判定区（用于高亮提示）
+        cur_sec = self.cur_chart_sec
+        approaching_arrow = False
+        for i, event in enumerate(self.arrow_events):
+            if i in self.arrow_states:
+                continue
+            if event.track_idx != track_idx:
+                continue
+            # 检测箭头是否在判定区附近（±0.15秒内）
+            time_diff = event.start_sec - cur_sec
+            if -0.05 <= time_diff <= 0.15:
+                approaching_arrow = True
+                break
+
+        # 绘制接近提示光晕
+        if approaching_arrow:
+            hint_surf = pygame.Surface((single_track_w, single_track_w), pygame.SRCALPHA)
+            cx, cy = single_track_w // 2, single_track_w // 2
+            for k in range(3):
+                r = int(single_track_w * (0.25 + 0.1 * k))
+                alpha = 60 - k * 15
+                pygame.draw.circle(hint_surf, (100, 200, 255, max(0, alpha)), (cx, cy), r)
+            self.screen.blit(hint_surf, (center_x - single_track_w // 2, judge_y - single_track_w // 2))
+
         # 绘制判定光
         light_strength = self.judge_light[track_idx]
         if light_strength > 0:
@@ -951,38 +1314,118 @@ class ArrowPlayer:
                 alpha = int(light_strength * (140 - k * 22))
                 pygame.draw.circle(light_surf, (255, 235, 185, max(0, alpha)), (cx, cy), r)
             self.screen.blit(light_surf, (center_x - single_track_w // 2, judge_y - single_track_w // 2))
-        # 绘制判定区皮肤
+
+        # 绘制判定区皮肤（按键时缩小效果）
         receptor_surf = self.receptor_surfs[track_idx]
         if receptor_surf:
-            target_w = int(single_track_w * 0.60)
+            base_w = int(single_track_w * 0.55)
+            # 按键时缩小效果
+            if self.key_pressed[track_idx]:
+                scale_factor = 0.85
+            else:
+                scale_factor = 1.0
+            target_w = int(base_w * scale_factor)
             scale = target_w / float(max(1, receptor_surf.get_width()))
             target_h = int(receptor_surf.get_height() * scale)
             scale_surf = pygame.transform.smoothscale(receptor_surf, (target_w, target_h))
-            self.screen.blit(scale_surf, (center_x - target_w // 2, judge_y - target_h // 2))
+            # 按键时稍微向下偏移
+            y_offset = 3 if self.key_pressed[track_idx] else 0
+            self.screen.blit(scale_surf, (center_x - target_w // 2, judge_y - target_h // 2 + y_offset))
+        else:
+            # 无皮肤时绘制默认判定区
+            radius = int(single_track_w * 0.22)
+            if self.key_pressed[track_idx]:
+                radius = int(radius * 0.85)
+            color = (80, 80, 100) if self.key_pressed[track_idx] else (60, 60, 80)
+            pygame.draw.circle(self.screen, color, (center_x, judge_y), radius)
+            pygame.draw.circle(self.screen, (100, 100, 120), (center_x, judge_y), radius, 2)
 
-    def _draw_top_info(self, y1: int, y2: int, y3: int):
-        """绘制顶部谱面、播放、参数信息"""
-        sm_name = os.path.basename(self.sm_path)
-        audio_name = os.path.basename(self.audio_path) if self.audio_path else "（未找到音频）"
-        cur_sec = self.cur_chart_sec
-        # 文本1：谱面+音频
-        text1 = f"谱面：{sm_name}   音频：{audio_name}"
-        # 文本2：时间+播放状态
-        text2 = f"时间：{format_seconds(cur_sec)} / {format_seconds(self.total_chart_sec)}   播放：{'是' if self.is_playing else '否'}"
-        # 文本3：参数信息
-        text3 = f"tick/拍：{self.tick_per_beat}   视觉速度：{int(self.scroll_speed)}px/s   offset：{self.offset:+.2f}s   映射：{self.atype_map}"
-        # 绘制
-        self.screen.blit(self.font.render(text1, True, (235, 235, 235)), (18, y1))
-        self.screen.blit(self.small_font.render(text2, True, (200, 200, 210)), (18, y2))
-        self.screen.blit(self.small_font.render(text3, True, (170, 170, 190)), (18, y3))
+    def _draw_judge_display(self, judge_y: int):
+        """绘制判定结果文字（中央大字）"""
+        if self.judge_display_time <= 0 or not self.judge_display_text:
+            return
+        # 判定颜色
+        judge_colors = {
+            "PERFECT": (50, 255, 100),   # 绿色
+            "GOOD": (255, 220, 50),      # 黄色
+            "BAD": (255, 80, 80),        # 红色
+            "MISS": (150, 150, 150),     # 灰色
+        }
+        color = judge_colors.get(self.judge_display_text, (255, 255, 255))
+        # 淡出效果
+        alpha = min(1.0, self.judge_display_time / 0.3)
+        color = tuple(int(c * alpha) for c in color)
+        # 绘制判定文字（大字体）
+        judge_font = safe_load_chinese_font(42)
+        text_surf = judge_font.render(self.judge_display_text, True, color)
+        text_rect = text_surf.get_rect(center=(self.window_w // 2, judge_y + 100))
+        self.screen.blit(text_surf, text_rect)
+
+    def _draw_stats_panel(self, panel_x: int, panel_y: int):
+        """绘制右侧统计面板"""
+        # 面板背景
+        panel_w = 130
+        panel_h = 220
+        panel_surf = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel_surf.fill((15, 15, 22, 200))
+        pygame.draw.rect(panel_surf, (50, 50, 70), (0, 0, panel_w, panel_h), border_radius=10)
+        self.screen.blit(panel_surf, (panel_x, panel_y))
+
+        # 标题
+        if self.font:
+            title_surf = self.font.render("统计", True, (200, 200, 220))
+            self.screen.blit(title_surf, (panel_x + 10, panel_y + 8))
+
+        # 各判定数量
+        if self.small_font:
+            stats = [
+                (f"PERFECT", self.judge_count['PERFECT'], (50, 255, 100)),
+                (f"GOOD", self.judge_count['GOOD'], (255, 220, 50)),
+                (f"BAD", self.judge_count['BAD'], (255, 100, 100)),
+                (f"MISS", self.judge_count['MISS'], (130, 130, 140)),
+            ]
+            for i, (label, count, color) in enumerate(stats):
+                y = panel_y + 38 + i * 28
+                label_surf = self.small_font.render(label, True, color)
+                self.screen.blit(label_surf, (panel_x + 10, y))
+                count_surf = self.small_font.render(str(count), True, (220, 220, 230))
+                self.screen.blit(count_surf, (panel_x + 90, y))
+
+            # 分数
+            score_surf = self.font.render(f"{self.score}", True, (255, 220, 100))
+            self.screen.blit(score_surf, (panel_x + 10, panel_y + 150))
+
+            # 连击
+            combo_color = (100, 255, 150) if self.combo > 10 else (200, 200, 210)
+            combo_surf = self.small_font.render(f"Combo: {self.combo}", True, combo_color)
+            self.screen.blit(combo_surf, (panel_x + 10, panel_y + 175))
+
+            # 最大连击
+            max_surf = self.small_font.render(f"Max: {self.max_combo}", True, (180, 180, 190))
+            self.screen.blit(max_surf, (panel_x + 75, panel_y + 175))
 
     def _draw_arrows(self, track_start_x: int, single_track_w: int, judge_y: int, bottom_y: int, top_y: int):
         """绘制所有箭头（点按+长按）"""
         visible_sec = (bottom_y - judge_y) / self.scroll_speed
         advance_sec = visible_sec + 1.0
         cur_sec = self.cur_chart_sec
+
+        # 绘制命中动画（在其他箭头之上）
+        for idx, anim in self.hit_animations.items():
+            if idx >= len(self.arrow_events):
+                continue
+            event = self.arrow_events[idx]
+            center_x = track_start_x + event.track_idx * single_track_w + single_track_w // 2
+            # 动画位置：从判定线向上飘
+            y_pos = judge_y - anim["y"] * (1 - anim["alpha"] * 0.5)  # 向上飘一点
+            self._draw_tap_arrow_with_anim(event.track_idx, center_x, y_pos, single_track_w, judge_y,
+                                           anim["alpha"], anim["scale"])
+
         # 遍历箭头事件，只绘制可视区域内的
-        for event in self.arrow_events:
+        for idx, event in enumerate(self.arrow_events):
+            # 跳过已处理的箭头（已命中或已miss）- 但有动画的不跳过
+            if idx in self.arrow_states and idx not in self.hit_animations:
+                continue
             if event.start_sec < cur_sec - 0.5 and event.end_sec < cur_sec - 0.5:
                 continue
             if event.start_sec > cur_sec + advance_sec:
@@ -1000,6 +1443,34 @@ class ArrowPlayer:
                 dy_end = (event.end_sec - cur_sec) * self.scroll_speed
                 y_end = judge_y + dy_end
                 self._draw_hold_arrow(event.track_idx, center_x, y_start, y_end, single_track_w, judge_y)
+
+    def _draw_tap_arrow_with_anim(self, track_idx: int, center_x: int, y: float, single_track_w: int,
+                                   judge_y: int, alpha: float, scale: float):
+        """绘制带动画效果的点按箭头"""
+        if y < judge_y - 100 or y > self.window_h - 40:
+            return
+
+        tap_surf = self.tap_surfs[track_idx]
+        if tap_surf:
+            base_w = int(single_track_w * 0.60)
+            base_w = max(22, base_w)
+            target_w = int(base_w * scale)
+            target_h = int(tap_surf.get_height() * (target_w / float(max(1, tap_surf.get_width()))))
+
+            # 缩放并设置透明度
+            scale_surf = pygame.transform.smoothscale(tap_surf, (target_w, target_h))
+            # 创建带透明度的surface
+            alpha_surf = pygame.Surface((target_w, target_h), pygame.SRCALPHA)
+            alpha_surf.blit(scale_surf, (0, 0))
+            alpha_surf.set_alpha(int(alpha * 255))
+            self.screen.blit(alpha_surf, (center_x - target_w // 2, int(y) - target_h // 2))
+        else:
+            # 无皮肤时的动画效果
+            radius = int(max(9, min(22, single_track_w // 4)) * scale)
+            color = (240, 240, 245, int(alpha * 255))
+            surf = pygame.Surface((radius * 2 + 4, radius * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(surf, color, (radius + 2, radius + 2), radius)
+            self.screen.blit(surf, (center_x - radius - 2, int(y) - radius - 2))
 
     def _draw_tap_arrow(self, track_idx: int, center_x: int, y: float, single_track_w: int, judge_y: int):
         """
@@ -1038,50 +1509,84 @@ class ArrowPlayer:
 
     def _draw_hold_arrow(self, track_idx: int, center_x: int, y_start: float, y_end: float, single_track_w: int, judge_y: int):
         """绘制长按箭头（箭身+箭尾+箭头头部）"""
+        # 记录原始起止位置（用于绘制头部和尾部）
+        orig_y1 = min(y_start, y_end)
+        orig_y2 = max(y_start, y_end)
+
         # 裁切判定线以上的部分，避免箭头超出判定线
-        y1 = min(y_start, y_end)
-        y2 = max(y_start, y_end)
-        y1 = max(y1, float(judge_y))
+        y1 = max(orig_y1, float(judge_y))
+        y2 = orig_y2
+
+        # 可视区域裁切
         if y2 < 50 or y1 > self.window_h - 40:
             return
-        # 可视区域裁切
         y1c = max(50.0, y1)
         y2c = min(float(self.window_h - 40), y2)
         if y2c <= y1c:
             return
 
+        # 统一宽度比例：箭身宽度与点按箭头一致
+        body_w = int(single_track_w * 0.50)
+        body_w = max(20, body_w)
+
         # 绘制长按箭身
         hold_body_surf = self.hold_body_surfs[track_idx]
-        if hold_body_surf:
-            target_w = int(single_track_w * 0.26)
-            target_w = max(12, target_w)
-            scale = target_w / float(max(1, hold_body_surf.get_width()))
-            single_h = int(hold_body_surf.get_height() * scale)
-            single_h = max(8, single_h)
-            scale_surf = pygame.transform.smoothscale(hold_body_surf, (target_w, single_h))
-            current_y = int(y1c)
-            while current_y < int(y2c):
-                self.screen.blit(scale_surf, (center_x - target_w // 2, current_y))
-                current_y += single_h
-        else:
-            # 无皮肤时绘制默认矩形箭身
-            w = max(9, min(16, single_track_w // 7))
-            rect = pygame.Rect(center_x - w // 2, int(y1c), w, int(max(2, y2c - y1c)))
-            pygame.draw.rect(self.screen, (220, 220, 230), rect, border_radius=6)
-            pygame.draw.rect(self.screen, (20, 20, 25), rect, width=2, border_radius=6)
+        body_height = int(y2c - y1c)
+        if body_height > 0:
+            if hold_body_surf:
+                # 使用拉伸方式绘制整个箭身，避免平铺接缝问题
+                scale = body_w / float(max(1, hold_body_surf.get_width()))
+                single_h = int(hold_body_surf.get_height() * scale)
+                single_h = max(8, single_h)
+                scale_surf = pygame.transform.smoothscale(hold_body_surf, (body_w, single_h))
+                # 计算需要多少个完整贴图
+                current_y = int(y1c)
+                while current_y < int(y2c):
+                    # 最后一段可能需要裁切
+                    remaining_h = int(y2c) - current_y
+                    if remaining_h >= single_h:
+                        self.screen.blit(scale_surf, (center_x - body_w // 2, current_y))
+                        current_y += single_h
+                    else:
+                        # 最后一段：拉伸到剩余高度
+                        last_surf = pygame.transform.smoothscale(hold_body_surf, (body_w, remaining_h))
+                        self.screen.blit(last_surf, (center_x - body_w // 2, current_y))
+                        break
+            else:
+                # 无皮肤时绘制默认矩形箭身
+                rect = pygame.Rect(center_x - body_w // 2, int(y1c), body_w, body_height)
+                pygame.draw.rect(self.screen, (180, 180, 200), rect, border_radius=8)
+                pygame.draw.rect(self.screen, (40, 40, 50), rect, width=2, border_radius=8)
 
-        # 绘制长按箭尾
+        # 绘制长按箭尾（在实际结束位置，即使超出屏幕也要正确处理）
         hold_tail_surf = self.hold_tail_surfs[track_idx]
-        if hold_tail_surf:
-            target_w = int(single_track_w * 0.40)
-            scale = target_w / float(max(1, hold_tail_surf.get_width()))
-            target_h = int(hold_tail_surf.get_height() * scale)
-            scale_surf = pygame.transform.smoothscale(hold_tail_surf, (target_w, target_h))
-            self.screen.blit(scale_surf, (center_x - target_w // 2, int(y2c) - target_h // 2))
+        tail_y = min(orig_y2, float(self.window_h - 40))  # 尾部Y坐标，限制在屏幕内
+        if tail_y >= judge_y and tail_y >= 50:  # 只在可视范围内绘制
+            if hold_tail_surf:
+                tail_w = int(single_track_w * 0.55)
+                tail_w = max(22, tail_w)
+                scale = tail_w / float(max(1, hold_tail_surf.get_width()))
+                tail_h = int(hold_tail_surf.get_height() * scale)
+                tail_surf = pygame.transform.smoothscale(hold_tail_surf, (tail_w, tail_h))
+                self.screen.blit(tail_surf, (center_x - tail_w // 2, int(tail_y) - tail_h // 2))
+            else:
+                # 无皮肤时绘制默认尾部
+                tail_w = int(single_track_w * 0.35)
+                tail_h = max(8, tail_w // 2)
+                tail_rect = pygame.Rect(center_x - tail_w // 2, int(tail_y) - tail_h, tail_w, tail_h)
+                pygame.draw.rect(self.screen, (160, 160, 180), tail_rect, border_radius=4)
 
-        # 绘制长按头部（点按箭头）
-        if y_start >= judge_y:
-            self._draw_tap_arrow(track_idx, center_x, y_start, single_track_w, judge_y)
+        # 绘制长按头部（点按箭头，在原始起始位置）
+        if orig_y1 >= judge_y:
+            self._draw_tap_arrow(track_idx, center_x, orig_y1, single_track_w, judge_y)
+
+    def _draw_footer_tips(self, y: int):
+        """绘制底部快捷键提示"""
+        if not self.small_font:
+            return
+        tips = "空格:暂停/继续  R:重播  ←/→:快退快进  [/]:调速度  -/=:调Offset  T:切Tick  M:切映射  Esc:退出"
+        tip_surf = self.small_font.render(tips, True, (120, 120, 140))
+        self.screen.blit(tip_surf, (20, y))
 
     def _draw_tick_tip(self, bottom_y: int):
         """绘制tick匹配疑点提示"""
@@ -1104,14 +1609,15 @@ class LauncherUI:
         else:
             self.root = ctk.CTk()
         # 窗口配置
-        self.root.title("SM 谱面直接播放器")
-        self.root.geometry("720x500")
-        self.root.resizable(False, False)
+        self.root.title("SM Arrow Player")
+        self.root.geometry("800x600")
+        self.root.resizable(True, True)
+        self.root.minsize(600, 450)
         ctk.set_appearance_mode("dark")
         # 核心变量
         self.sm_path = ctk.StringVar(value="")
         self.status_text = ctk.StringVar(
-            value="把 .sm 谱面文件拖到下方区域，自动加载同目录音频并播放（支持mp3/ogg/wav）"
+            value="拖入 .sm 谱面文件到下方区域，或将 bn.jpg 放在谱面同目录作为背景封面"
         )
         # 构建界面
         self._build_ui()
@@ -1121,42 +1627,145 @@ class LauncherUI:
 
     def _build_ui(self):
         """构建启动界面UI"""
-        main_frame = ctk.CTkFrame(self.root)
-        main_frame.pack(fill="both", expand=True, padx=14, pady=14)
-        # 标题
+        # 主容器
+        main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # 标题区域
+        title_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        title_frame.pack(fill="x", pady=(0, 15))
+
         title_label = ctk.CTkLabel(
-            main_frame, text="SM 谱面直接播放器", font=ctk.CTkFont(size=20, weight="bold")
+            title_frame,
+            text="SM Arrow Player",
+            font=ctk.CTkFont(size=28, weight="bold"),
+            text_color=("#4ECDC4", "#4ECDC4")
         )
-        title_label.pack(pady=(6, 10))
-        # 拖拽框
-        self.drag_frame = ctk.CTkFrame(main_frame, height=220, corner_radius=14)
-        self.drag_frame.pack(fill="x", padx=10, pady=(0, 12))
-        drag_tip = ctk.CTkLabel(
-            self.drag_frame,
-            text="拖入 .sm 文件到这里\n自动识别同目录音频 + 自动播放",
-            font=ctk.CTkFont(size=16)
+        title_label.pack(side="left")
+
+        version_label = ctk.CTkLabel(
+            title_frame,
+            text="v1.0",
+            font=ctk.CTkFont(size=14),
+            text_color=("gray70", "gray40")
         )
-        drag_tip.place(relx=0.5, rely=0.5, anchor="center")
-        # 路径输入+选择按钮
-        row1 = ctk.CTkFrame(main_frame)
-        row1.pack(fill="x", padx=10, pady=(0, 10))
-        ctk.CTkEntry(
-            row1, textvariable=self.sm_path, placeholder_text="SM文件路径", width=520
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
-            row1, text="选择SM文件", width=170, command=self._select_sm_file
-        ).pack(side="left")
-        # 状态提示
-        ctk.CTkLabel(
-            main_frame, textvariable=self.status_text, wraplength=680, justify="left"
-        ).pack(pady=(6, 0))
-        # 说明文字
-        desc_label = ctk.CTkLabel(
+        version_label.pack(side="left", padx=(10, 0), pady=(12, 0))
+
+        # 副标题
+        subtitle = ctk.CTkLabel(
             main_frame,
-            text="说明：播放结束/按Esc/关闭窗口，自动返回此界面；支持所有原快捷键操作",
-            wraplength=680, justify="left", font=ctk.CTkFont(size=13)
+            text="StepMania 谱面可视化播放器 - 支持 .sm 文件直接播放",
+            font=ctk.CTkFont(size=13),
+            text_color=("gray70", "gray50")
         )
-        desc_label.pack(pady=(10, 0))
+        subtitle.pack(pady=(0, 20))
+
+        # 拖拽区域
+        self.drag_frame = ctk.CTkFrame(
+            main_frame,
+            height=200,
+            corner_radius=15,
+            fg_color=("#1a1a2e", "#0d0d1a"),
+            border_width=2,
+            border_color=("#3d5a80", "#1e3a5f")
+        )
+        self.drag_frame.pack(fill="x", pady=(0, 20))
+        self.drag_frame.pack_propagate(False)
+
+        # 拖拽区域内容
+        drag_content = ctk.CTkFrame(self.drag_frame, fg_color="transparent")
+        drag_content.place(relx=0.5, rely=0.5, anchor="center")
+
+        drag_icon = ctk.CTkLabel(
+            drag_content,
+            text="📁",
+            font=ctk.CTkFont(size=40),
+            text_color=("#4ECDC4", "#4ECDC4")
+        )
+        drag_icon.pack()
+
+        drag_tip = ctk.CTkLabel(
+            drag_content,
+            text="拖入 .sm 谱面文件到这里\n自动识别音频（mp3/ogg/wav）",
+            font=ctk.CTkFont(size=14),
+            text_color=("gray80", "gray60"),
+            justify="center"
+        )
+        drag_tip.pack(pady=(10, 0))
+
+        # 文件选择行
+        file_row = ctk.CTkFrame(main_frame, fg_color="transparent")
+        file_row.pack(fill="x", pady=(0, 15))
+
+        self.path_entry = ctk.CTkEntry(
+            file_row,
+            textvariable=self.sm_path,
+            placeholder_text="选择或拖入 SM 谱面文件...",
+            height=40,
+            font=ctk.CTkFont(size=13),
+            corner_radius=10
+        )
+        self.path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        browse_btn = ctk.CTkButton(
+            file_row,
+            text="浏览文件",
+            width=120,
+            height=40,
+            font=ctk.CTkFont(size=13),
+            corner_radius=10,
+            command=self._select_sm_file
+        )
+        browse_btn.pack(side="left")
+
+        # 状态提示
+        status_frame = ctk.CTkFrame(
+            main_frame,
+            fg_color=("#16213e", "#0f172a"),
+            corner_radius=10
+        )
+        status_frame.pack(fill="x", pady=(0, 15))
+
+        self.status_label = ctk.CTkLabel(
+            status_frame,
+            textvariable=self.status_text,
+            wraplength=740,
+            justify="center",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray80", "gray60")
+        )
+        self.status_label.pack(padx=15, pady=10)
+
+        # 功能说明
+        info_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        info_frame.pack(fill="x", side="bottom")
+
+        # 快捷键说明
+        shortcuts = [
+            "空格: 暂停/继续",
+            "R: 重播",
+            "←/→: 快退/快进 5秒",
+            "[/]: 调节速度",
+            "-/=: 调节偏移"
+        ]
+        shortcuts_text = "  |  ".join(shortcuts)
+
+        shortcut_label = ctk.CTkLabel(
+            info_frame,
+            text=shortcuts_text,
+            font=ctk.CTkFont(size=11),
+            text_color=("gray60", "gray40")
+        )
+        shortcut_label.pack(pady=(5, 0))
+
+        # 封面提示
+        banner_tip = ctk.CTkLabel(
+            info_frame,
+            text="提示: 将 bann.jpg 或 banner.jpg 放在谱面同目录可显示封面背景",
+            font=ctk.CTkFont(size=11),
+            text_color=("gray50", "gray30")
+        )
+        banner_tip.pack(pady=(5, 0))
 
     def _bind_drag(self):
         """绑定拖拽事件"""
