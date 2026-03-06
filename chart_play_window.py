@@ -38,6 +38,7 @@ class GameState(Enum):
     PLAYING = "playing"
     PAUSED = "paused"
     FINISHED = "finished"
+    GAME_OVER = "game_over"  # 血条为空游戏结束
 
 
 @dataclass
@@ -48,9 +49,12 @@ class GameResult:
     accuracy: float = 0.0
     grade: str = "F"
     perfect: int = 0
+    cool: int = 0  # Cool判定数量
     good: int = 0
     bad: int = 0
     miss: int = 0
+    win_rate: float = 0.0  # 胜率
+    is_game_over: bool = False  # 是否因血条为空结束
 
 
 class ChartPlayWindow(QWidget):
@@ -128,6 +132,9 @@ class ChartPlayWindow(QWidget):
 
         # 按键状态
         self._key_pressed: List[bool] = [False] * 5
+
+        # 自动播放/录制模式
+        self._autoplay_mode = False  # 默认是消耗血条和分数的模式
 
         # 封面
         self._banner_pixmap: Optional[QPixmap] = None
@@ -354,10 +361,33 @@ class ChartPlayWindow(QWidget):
             # 更新时间
             self._current_sec = time.perf_counter() - self._start_time
 
+            # 更新血条自动回血
+            self._judge_system.update_health_regen(dt, self._current_sec)
+
+            # 检查血条是否为空（游戏结束）
+            if not self._autoplay_mode and self._judge_system.is_dead():
+                self._finish_game(game_over=True)
+                return
+
+            # 自动播放模式：自动判定
+            if self._autoplay_mode:
+                autoplay_results = self._judge_system.autoplay_judge(
+                    self._arrow_events, self._current_sec
+                )
+                for arrow_idx, result in autoplay_results:
+                    event = self._arrow_events[arrow_idx]
+                    self._judge_light.trigger(event.track_idx)
+                    self._judge_display.show(result)
+                    self._hit_effect.trigger(arrow_idx=arrow_idx, track_idx=event.track_idx)
+
             # 检测MISS
             missed = self._judge_system.check_missed(self._arrow_events, self._current_sec)
             for idx in missed:
                 self._judge_display.show(JudgeResult.MISS)
+                # MISS后检查是否死亡
+                if not self._autoplay_mode and self._judge_system.is_dead():
+                    self._finish_game(game_over=True)
+                    return
 
             # 检查结束
             if self._current_sec >= self._total_sec:
@@ -373,10 +403,10 @@ class ChartPlayWindow(QWidget):
 
         self.update()
 
-    def _finish_game(self):
+    def _finish_game(self, game_over: bool = False):
         """游戏结束"""
         self._is_playing = False
-        self._game_state = GameState.FINISHED
+        self._game_state = GameState.GAME_OVER if game_over else GameState.FINISHED
         self._game_timer.stop()
         self._audio_manager.stop_music()
 
@@ -387,9 +417,12 @@ class ChartPlayWindow(QWidget):
             accuracy=self._judge_system.get_accuracy(),
             grade=self._judge_system.get_grade(),
             perfect=self._judge_system.stats.perfect,
+            cool=self._judge_system.stats.cool,
             good=self._judge_system.stats.good,
             bad=self._judge_system.stats.bad,
-            miss=self._judge_system.stats.miss
+            miss=self._judge_system.stats.miss,
+            win_rate=self._judge_system.get_win_rate(),
+            is_game_over=game_over
         )
 
         self.update()
@@ -428,7 +461,7 @@ class ChartPlayWindow(QWidget):
                     self.restart()
                 else:
                     self.back_requested.emit()
-            elif self._game_state == GameState.FINISHED:
+            elif self._game_state in (GameState.FINISHED, GameState.GAME_OVER):
                 self.back_requested.emit()
             event.accept()
             return
@@ -440,14 +473,19 @@ class ChartPlayWindow(QWidget):
                 self.resume()
             elif self._game_state == GameState.READY:
                 self.start()
-            elif self._game_state == GameState.FINISHED:
-                self.back_requested.emit()
             event.accept()
             return
 
-        elif key == Qt.Key.Key_R:
-            if self._game_state in (GameState.READY, GameState.PLAYING, GameState.PAUSED, GameState.FINISHED):
+        elif key == Qt.Key.Key_N:
+            if self._game_state in (GameState.READY, GameState.PLAYING, GameState.PAUSED, GameState.FINISHED, GameState.GAME_OVER):
                 self.restart()
+            event.accept()
+            return
+
+        # 左箭头键 - 返回选歌（全局）
+        elif key == Qt.Key.Key_Left:
+            if self._game_state in (GameState.READY, GameState.PLAYING, GameState.PAUSED, GameState.FINISHED, GameState.GAME_OVER):
+                self.back_requested.emit()
             event.accept()
             return
 
@@ -513,6 +551,14 @@ class ChartPlayWindow(QWidget):
             event.accept()
             return
 
+        # M键切换自动播放/录制模式
+        elif key == Qt.Key.Key_M:
+            self._autoplay_mode = not self._autoplay_mode
+            self._judge_system.set_autoplay(self._autoplay_mode)
+            self.update()
+            event.accept()
+            return
+
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
@@ -550,7 +596,7 @@ class ChartPlayWindow(QWidget):
                     return
 
         # 结算界面点击 - 返回选歌
-        elif self._game_state == GameState.FINISHED:
+        elif self._game_state in (GameState.FINISHED, GameState.GAME_OVER):
             self.back_requested.emit()
             return
 
@@ -598,7 +644,7 @@ class ChartPlayWindow(QWidget):
             self._draw_game(painter)
             if self._game_state == GameState.PAUSED:
                 self._draw_pause_menu(painter)
-        elif self._game_state == GameState.FINISHED:
+        elif self._game_state in (GameState.FINISHED, GameState.GAME_OVER):
             self._draw_game(painter)
             self._draw_result(painter)
 
@@ -700,7 +746,7 @@ class ChartPlayWindow(QWidget):
         w, h = self.width(), self.height()
 
         # 中央玻璃卡片
-        card_w, card_h = 500, 150
+        card_w, card_h = 500, 180
         card_x = (w - card_w) // 2
         card_y = (h - card_h) // 2
 
@@ -741,14 +787,32 @@ class ChartPlayWindow(QWidget):
         painter.setFont(font_title)
         painter.setPen(QColor(230, 240, 255))
         title_text = self._chart_title[:40] + "..." if len(self._chart_title) > 40 else self._chart_title
-        painter.drawText(QRectF(card_x, card_y + 30, card_w, 40), Qt.AlignmentFlag.AlignCenter, title_text)
+        painter.drawText(QRectF(card_x, card_y + 25, card_w, 40), Qt.AlignmentFlag.AlignCenter, title_text)
+
+        # 模式指示
+        font_mode = create_font(14)
+        painter.setFont(font_mode)
+        if self._autoplay_mode:
+            painter.setPen(QColor(100, 255, 150))
+            mode_text = "🎬 自动播放模式"
+        else:
+            painter.setPen(QColor(255, 200, 100))
+            mode_text = "🎮 挑战模式"
+        painter.drawText(QRectF(card_x, card_y + 65, card_w, 30), Qt.AlignmentFlag.AlignCenter, mode_text)
 
         # 提示文字
         font_hint = create_font(14)
         painter.setFont(font_hint)
         painter.setPen(QColor(140, 160, 200))
-        painter.drawText(QRectF(card_x, card_y + 80, card_w, 35), Qt.AlignmentFlag.AlignCenter,
+        painter.drawText(QRectF(card_x, card_y + 100, card_w, 35), Qt.AlignmentFlag.AlignCenter,
                         "按 空格键 开始游戏")
+
+        # 模式切换提示
+        font_small = create_font(11)
+        painter.setFont(font_small)
+        painter.setPen(QColor(100, 120, 150))
+        painter.drawText(QRectF(card_x, card_y + 135, card_w, 30), Qt.AlignmentFlag.AlignCenter,
+                        "M:切换模式  ESC/←:返回选歌")
 
     def _draw_game(self, painter: QPainter):
         """绘制游戏画面"""
@@ -808,6 +872,9 @@ class ChartPlayWindow(QWidget):
 
         # 绘制顶部信息栏
         self._draw_header(painter, header_h)
+
+        # 绘制血条
+        self._draw_health_bar(painter, 15, header_h + 10)
 
         # 绘制右侧统计面板
         self._draw_stats_panel(painter, track_start_x + track_total_w + 15, header_h + 20)
@@ -1270,9 +1337,125 @@ class ChartPlayWindow(QWidget):
         for i, param in enumerate(params):
             painter.drawText(param_x + 10, 32 + i * 18, param)
 
+    def _draw_health_bar(self, painter: QPainter, x: int, y: int):
+        """绘制血条"""
+        bar_w = 180
+        bar_h = 20
+
+        # 自动播放模式显示提示
+        if self._autoplay_mode:
+            # 玻璃背景
+            glass_rect = QRectF(x, y, bar_w + 80, bar_h)
+            glass_path = QPainterPath()
+            glass_path.addRoundedRect(glass_rect, 10, 10)
+            glass_gradient = QLinearGradient(x, y, x, y + bar_h)
+            glass_gradient.setColorAt(0, QColor(50, 180, 100, 150))
+            glass_gradient.setColorAt(1, QColor(40, 150, 80, 130))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(glass_gradient))
+            painter.drawPath(glass_path)
+
+            # 边框
+            painter.setPen(QPen(QColor(100, 255, 150, 150), 1))
+            painter.drawPath(glass_path)
+
+            # 文字
+            font = create_font(12, bold=True)
+            painter.setFont(font)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(glass_rect, Qt.AlignmentFlag.AlignCenter, "🎬 自动播放模式")
+            return
+
+        # 正常模式血条
+        health_percent = self._judge_system.get_health_percent()
+
+        # 外发光
+        for i in range(3):
+            glow_rect = QRectF(x - i*2, y - i*2, bar_w + i*4, bar_h + i*4)
+            glow_path = QPainterPath()
+            glow_path.addRoundedRect(glow_rect, 12 + i, 12 + i)
+            # 根据血量变化发光颜色
+            if health_percent > 0.5:
+                glow_color = QColor(100, 255, 150, 15 - i*5)
+            elif health_percent > 0.25:
+                glow_color = QColor(255, 200, 100, 15 - i*5)
+            else:
+                glow_color = QColor(255, 100, 100, 20 - i*6)
+            painter.setPen(QPen(glow_color, 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(glow_path)
+
+        # 血条背景
+        bg_rect = QRectF(x, y, bar_w, bar_h)
+        bg_path = QPainterPath()
+        bg_path.addRoundedRect(bg_rect, 10, 10)
+        bg_gradient = QLinearGradient(x, y, x, y + bar_h)
+        bg_gradient.setColorAt(0, QColor(30, 30, 40, 200))
+        bg_gradient.setColorAt(1, QColor(20, 20, 30, 180))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg_gradient))
+        painter.drawPath(bg_path)
+
+        # 血条边框
+        painter.setPen(QPen(QColor(80, 90, 110, 150), 1))
+        painter.drawPath(bg_path)
+
+        # 血量填充
+        if health_percent > 0:
+            fill_w = int((bar_w - 4) * health_percent)
+            fill_rect = QRectF(x + 2, y + 2, fill_w, bar_h - 4)
+            fill_path = QPainterPath()
+            fill_path.addRoundedRect(fill_rect, 8, 8)
+
+            # 根据血量变化颜色
+            if health_percent > 0.5:
+                # 绿色渐变
+                fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
+                fill_gradient.setColorAt(0, QColor(80, 220, 120))
+                fill_gradient.setColorAt(0.5, QColor(60, 200, 100))
+                fill_gradient.setColorAt(1, QColor(40, 180, 80))
+            elif health_percent > 0.25:
+                # 黄色渐变
+                fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
+                fill_gradient.setColorAt(0, QColor(255, 220, 80))
+                fill_gradient.setColorAt(0.5, QColor(255, 200, 60))
+                fill_gradient.setColorAt(1, QColor(220, 180, 40))
+            else:
+                # 红色渐变（闪烁效果）
+                pulse = abs(math.sin(time.time() * 8)) * 0.3 + 0.7
+                fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
+                fill_gradient.setColorAt(0, QColor(int(255 * pulse), int(80 * pulse), int(80 * pulse)))
+                fill_gradient.setColorAt(0.5, QColor(int(220 * pulse), int(60 * pulse), int(60 * pulse)))
+                fill_gradient.setColorAt(1, QColor(int(180 * pulse), int(40 * pulse), int(40 * pulse)))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(fill_gradient))
+            painter.drawPath(fill_path)
+
+            # 高光效果
+            highlight_rect = QRectF(x + 3, y + 3, fill_w - 2, (bar_h - 6) // 2)
+            highlight_gradient = QLinearGradient(x + 3, y + 3, x + 3, y + 3 + (bar_h - 6) // 2)
+            highlight_gradient.setColorAt(0, QColor(255, 255, 255, 80))
+            highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+            painter.fillRect(highlight_rect, QBrush(highlight_gradient))
+
+        # 血量文字
+        font = create_font(10, bold=True)
+        painter.setFont(font)
+        health_text = f"HP {int(self._judge_system.health)}"
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(QRectF(x, y, bar_w, bar_h), Qt.AlignmentFlag.AlignCenter, health_text)
+
+        # 模式提示
+        mode_text = "按 M 切换自动播放"
+        font_small = create_font(9)
+        painter.setFont(font_small)
+        painter.setPen(QColor(120, 130, 150))
+        painter.drawText(x, y + bar_h + 12, mode_text)
+
     def _draw_stats_panel(self, painter: QPainter, panel_x: int, panel_y: int):
         """绘制玻璃风格统计面板"""
-        panel_w, panel_h = 140, 270
+        panel_w, panel_h = 140, 310  # 增加高度以容纳血条和Cool
 
         # 外发光
         for i in range(3):
@@ -1312,26 +1495,32 @@ class ChartPlayWindow(QWidget):
         painter.setPen(QColor(200, 210, 230))
         painter.drawText(panel_x + 12, panel_y + 28, "📊 统计")
 
+        # 模式指示器
+        if self._autoplay_mode:
+            painter.setPen(QColor(100, 255, 150))
+            painter.drawText(panel_x + 70, panel_y + 28, "🎬自动")
+
         # 分割线
         painter.setPen(QPen(QColor(80, 90, 120, 60), 1))
         painter.drawLine(panel_x + 10, panel_y + 40, panel_x + panel_w - 10, panel_y + 40)
 
-        # 判定统计
+        # 判定统计（添加COOL）
         font_normal = create_font(11)
         painter.setFont(font_normal)
 
         stats = [
-            ("PERFECT", self._judge_system.stats.perfect, QColor(100, 255, 180)),
-            ("GOOD", self._judge_system.stats.good, QColor(100, 200, 255)),
-            ("BAD", self._judge_system.stats.bad, QColor(255, 180, 100)),
-            ("MISS", self._judge_system.stats.miss, QColor(255, 100, 100)),
+            ("PERFECT", self._judge_system.stats.perfect, QColor(50, 255, 120)),
+            ("COOL", self._judge_system.stats.cool, QColor(100, 220, 255)),
+            ("GOOD", self._judge_system.stats.good, QColor(255, 220, 50)),
+            ("BAD", self._judge_system.stats.bad, QColor(255, 150, 50)),
+            ("MISS", self._judge_system.stats.miss, QColor(255, 80, 80)),
         ]
 
         for i, (label, count, color) in enumerate(stats):
-            y = panel_y + 60 + i * 32
+            y = panel_y + 58 + i * 28
 
             # 背景条
-            bar_rect = QRectF(panel_x + 10, y - 8, panel_w - 20, 24)
+            bar_rect = QRectF(panel_x + 10, y - 8, panel_w - 20, 22)
             bar_gradient = QLinearGradient(panel_x + 10, y - 8, panel_x + panel_w - 10, y - 8)
             bar_gradient.setColorAt(0, QColor(color.red(), color.green(), color.blue(), 25))
             bar_gradient.setColorAt(1, QColor(color.red(), color.green(), color.blue(), 8))
@@ -1341,16 +1530,24 @@ class ChartPlayWindow(QWidget):
 
             # 标签和数值
             painter.setPen(color)
-            painter.drawText(panel_x + 15, y + 6, label)
+            painter.drawText(panel_x + 15, y + 5, label)
 
             # 数字右对齐
             painter.setPen(QColor(240, 245, 255))
             count_str = str(count)
-            painter.drawText(panel_x + panel_w - 15 - len(count_str) * 7, y + 6, count_str)
+            painter.drawText(panel_x + panel_w - 15 - len(count_str) * 7, y + 5, count_str)
 
         # 分割线
         painter.setPen(QPen(QColor(80, 90, 120, 60), 1))
-        painter.drawLine(panel_x + 10, panel_y + 180, panel_x + panel_w - 10, panel_y + 180)
+        painter.drawLine(panel_x + 10, panel_y + 198, panel_x + panel_w - 10, panel_y + 198)
+
+        # 胜率显示
+        win_rate = self._judge_system.get_win_rate()
+        font_rate = create_font(10)
+        painter.setFont(font_rate)
+        rate_color = QColor(100, 255, 180) if win_rate >= 90 else QColor(255, 220, 100) if win_rate >= 70 else QColor(255, 150, 100)
+        painter.setPen(rate_color)
+        painter.drawText(panel_x + 10, panel_y + 215, f"胜率: {win_rate:.1f}%")
 
         # 分数 - 大号发光
         font_score = create_font(22, bold=True)
@@ -1359,7 +1556,7 @@ class ChartPlayWindow(QWidget):
         # 分数发光效果
         score_str = f"{self._judge_system.score:,}"
         painter.setPen(QColor(255, 220, 100))
-        painter.drawText(panel_x + 10, panel_y + 210, score_str)
+        painter.drawText(panel_x + 10, panel_y + 248, score_str)
 
         # 连击
         font_combo = create_font(10)
@@ -1373,16 +1570,16 @@ class ChartPlayWindow(QWidget):
         else:
             combo_color = QColor(140, 150, 170)
         painter.setPen(combo_color)
-        painter.drawText(panel_x + 10, panel_y + 230, f"🔥 Combo: {combo}")
+        painter.drawText(panel_x + 10, panel_y + 270, f"🔥 Combo: {combo}")
 
         painter.setPen(QColor(100, 110, 130))
-        painter.drawText(panel_x + 85, panel_y + 230, f"Max: {self._judge_system.max_combo}")
+        painter.drawText(panel_x + 85, panel_y + 270, f"Max: {self._judge_system.max_combo}")
 
         # 参数显示（间距和缩放）
         font_param = create_font(9)
         painter.setFont(font_param)
         painter.setPen(QColor(150, 160, 180))
-        painter.drawText(panel_x + 10, panel_y + 255, f"间距: {self._arrow_spacing:.1f}  大小: {self._arrow_scale:.1f}x")
+        painter.drawText(panel_x + 10, panel_y + 295, f"间距: {self._arrow_spacing:.1f}  大小: {self._arrow_scale:.1f}x")
 
     def _draw_footer_tips(self, painter: QPainter, y: int):
         """绘制底部提示"""
@@ -1404,7 +1601,7 @@ class ChartPlayWindow(QWidget):
         font_small = create_font(9)
         painter.setFont(font_small)
         painter.setPen(QColor(120, 130, 150))
-        tips = f"空格:暂停 R:重播 [/]:调速 [+/-]:大小 {self._arrow_scale:.1f}x [,/.]:间距 {self._arrow_spacing:.2f} Esc:菜单"
+        tips = f"空格:暂停 N:重播 M:自动播放 ←:返回 [/]:调速 [+/-]:大小"
         painter.drawText(25, y + 18, tips)
 
     def _draw_pause_menu(self, painter: QPainter):
@@ -1518,16 +1715,17 @@ class ChartPlayWindow(QWidget):
         painter.fillRect(0, 0, w, h, QBrush(overlay))
 
         # 结算面板
-        panel_w, panel_h = 420, 400
+        panel_w, panel_h = 450, 480
         panel_x = (w - panel_w) // 2
         panel_y = (h - panel_h) // 2
 
         # 外发光
+        glow_color = QColor(255, 80, 80, 15) if self._result.is_game_over else QColor(100, 180, 255, 12)
         for i in range(5):
             glow_rect = QRectF(panel_x - i*3, panel_y - i*3, panel_w + i*6, panel_h + i*6)
             glow_path = QPainterPath()
             glow_path.addRoundedRect(glow_rect, 30 + i*2, 30 + i*2)
-            painter.setPen(QPen(QColor(100, 180, 255, 12 - i*3), 1))
+            painter.setPen(QPen(glow_color, 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(glow_path)
 
@@ -1545,7 +1743,8 @@ class ChartPlayWindow(QWidget):
         painter.drawPath(glass_path)
 
         # 玻璃边框
-        painter.setPen(QPen(QColor(120, 150, 200, 150), 1.5))
+        border_color = QColor(255, 100, 100, 150) if self._result.is_game_over else QColor(120, 150, 200, 150)
+        painter.setPen(QPen(border_color, 1.5))
         painter.drawPath(glass_path)
 
         # 顶部高光
@@ -1557,8 +1756,12 @@ class ChartPlayWindow(QWidget):
         # 标题
         font_title = create_font(22, bold=True)
         painter.setFont(font_title)
-        painter.setPen(QColor(220, 230, 245))
-        painter.drawText(QRectF(panel_x, panel_y + 20, panel_w, 45), Qt.AlignmentFlag.AlignCenter, "🎯 结算")
+        if self._result.is_game_over:
+            painter.setPen(QColor(255, 100, 100))
+            painter.drawText(QRectF(panel_x, panel_y + 20, panel_w, 45), Qt.AlignmentFlag.AlignCenter, "💀 游戏结束")
+        else:
+            painter.setPen(QColor(220, 230, 245))
+            painter.drawText(QRectF(panel_x, panel_y + 20, panel_w, 45), Qt.AlignmentFlag.AlignCenter, "🎯 结算")
 
         # 评级
         grade_colors = {
@@ -1596,25 +1799,33 @@ class ChartPlayWindow(QWidget):
         score_str = f"Score: {self._result.score:,}"
         painter.drawText(QRectF(panel_x, panel_y + 140, panel_w, 40), Qt.AlignmentFlag.AlignCenter, score_str)
 
+        # 胜率大显示
+        font_winrate = create_font(16, bold=True)
+        painter.setFont(font_winrate)
+        winrate_color = QColor(100, 255, 180) if self._result.win_rate >= 90 else QColor(255, 220, 100) if self._result.win_rate >= 70 else QColor(255, 150, 100)
+        painter.setPen(winrate_color)
+        painter.drawText(QRectF(panel_x, panel_y + 170, panel_w, 30), Qt.AlignmentFlag.AlignCenter, f"胜率: {self._result.win_rate:.1f}%")
+
         # 分割线
         painter.setPen(QPen(QColor(80, 90, 120, 80), 1))
-        painter.drawLine(panel_x + 40, panel_y + 180, panel_x + panel_w - 40, panel_y + 180)
+        painter.drawLine(panel_x + 40, panel_y + 205, panel_x + panel_w - 40, panel_y + 205)
 
-        # 判定统计
+        # 判定统计（添加COOL）
         font_normal = create_font(13)
         painter.setFont(font_normal)
         stats = [
-            ("PERFECT", self._result.perfect, QColor(100, 255, 180)),
-            ("GOOD", self._result.good, QColor(100, 200, 255)),
-            ("BAD", self._result.bad, QColor(255, 180, 100)),
-            ("MISS", self._result.miss, QColor(255, 100, 100)),
+            ("PERFECT", self._result.perfect, QColor(50, 255, 120)),
+            ("COOL", self._result.cool, QColor(100, 220, 255)),
+            ("GOOD", self._result.good, QColor(255, 220, 50)),
+            ("BAD", self._result.bad, QColor(255, 150, 50)),
+            ("MISS", self._result.miss, QColor(255, 80, 80)),
         ]
 
         for i, (label, count, color) in enumerate(stats):
-            y = panel_y + 200 + i * 35
+            y = panel_y + 220 + i * 32
 
             # 背景条
-            bar_rect = QRectF(panel_x + 50, y - 10, panel_w - 100, 28)
+            bar_rect = QRectF(panel_x + 50, y - 10, panel_w - 100, 26)
             bar_gradient = QLinearGradient(bar_rect.x(), y - 10, bar_rect.x() + bar_rect.width(), y - 10)
             bar_gradient.setColorAt(0, QColor(color.red(), color.green(), color.blue(), 30))
             bar_gradient.setColorAt(1, QColor(color.red(), color.green(), color.blue(), 10))
@@ -1629,19 +1840,23 @@ class ChartPlayWindow(QWidget):
             count_str = str(count)
             painter.drawText(panel_x + panel_w - 60 - len(count_str) * 8, y + 6, count_str)
 
+        # 分割线
+        painter.setPen(QPen(QColor(80, 90, 120, 80), 1))
+        painter.drawLine(panel_x + 40, panel_y + 385, panel_x + panel_w - 40, panel_y + 385)
+
         # 连击和准确率
         font_info = create_font(14)
         painter.setFont(font_info)
 
         painter.setPen(QColor(255, 200, 100))
-        painter.drawText(QRectF(panel_x, panel_y + 345, panel_w, 30),
+        painter.drawText(QRectF(panel_x, panel_y + 400, panel_w, 30),
                         Qt.AlignmentFlag.AlignCenter, f"🔥 Max Combo: {self._result.max_combo}")
 
         # 准确率条
         acc_width = panel_w - 100
         acc_height = 8
         acc_x = panel_x + 50
-        acc_y = panel_y + 375
+        acc_y = panel_y + 435
         acc = self._result.accuracy
 
         # 背景
@@ -1652,7 +1867,7 @@ class ChartPlayWindow(QWidget):
         painter.fillRect(QRectF(acc_x, acc_y, int(acc_width * acc), acc_height), acc_color)
 
         painter.setPen(QColor(200, 210, 230))
-        painter.drawText(QRectF(panel_x, panel_y + 380, panel_w, 30),
+        painter.drawText(QRectF(panel_x, panel_y + 450, panel_w, 30),
                         Qt.AlignmentFlag.AlignCenter, f"Accuracy: {acc * 100:.1f}%")
 
     def cleanup(self):

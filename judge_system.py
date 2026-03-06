@@ -41,12 +41,26 @@ class JudgeConfig:
 
 
 @dataclass
+class HealthConfig:
+    """血条配置"""
+    max_health: float = 100.0          # 最大血量
+    perfect_heal: float = 3.0          # Perfect回血
+    cool_heal: float = 2.5             # Cool回血
+    good_heal: float = 1.0             # Good回血
+    bad_damage: float = 5.0            # Bad扣血
+    miss_damage: float = 8.0           # Miss扣血
+    auto_regen_rate: float = 1.0       # 自动回血速率（每秒）
+    regen_delay: float = 3.0           # 受伤后回血延迟（秒）
+
+
+@dataclass
 class JudgeStats:
     """判定统计"""
     perfect: int = 0
     good: int = 0
     bad: int = 0
     miss: int = 0
+    cool: int = 0  # 添加Cool统计（接近Perfect的判定）
 
     @property
     def total(self) -> int:
@@ -62,6 +76,7 @@ class JudgeStats:
         """转换为字典"""
         return {
             "PERFECT": self.perfect,
+            "COOL": self.cool,
             "GOOD": self.good,
             "BAD": self.bad,
             "MISS": self.miss
@@ -74,19 +89,22 @@ class JudgeSystem:
 
     支持多种判定模式：
     - PERFECT: 完美命中（±45ms内）
-    - GOOD: 优秀命中（±90ms内）
+    - COOL: 优秀命中（±30ms内，新增）
+    - GOOD: 良好命中（±90ms内）
     - BAD: 较差命中（±135ms内）
     - MISS: 漏击（超过BAD窗口）
     """
 
-    def __init__(self, config: Optional[JudgeConfig] = None):
+    def __init__(self, config: Optional[JudgeConfig] = None, health_config: Optional[HealthConfig] = None):
         """
         初始化判定系统
 
         Args:
             config: 判定配置，为None时使用默认配置
+            health_config: 血条配置，为None时使用默认配置
         """
         self.config = config or JudgeConfig()
+        self.health_config = health_config or HealthConfig()
         self.reset()
 
     def reset(self):
@@ -96,6 +114,14 @@ class JudgeSystem:
         self.max_combo = 0
         self.stats = JudgeStats()
         self._arrow_states: Dict[int, int] = {}  # arrow_idx -> state (0=未处理, 1=已命中, 2=已miss)
+
+        # 血条系统
+        self.health = self.health_config.max_health
+        self._last_damage_time = -10.0  # 上次受伤时间
+        self._is_dead = False  # 是否死亡（血条为空）
+
+        # 自动播放模式
+        self._autoplay_mode = False
 
     def judge(self, arrow_events: List, track_idx: int, current_sec: float) -> Tuple[Optional[JudgeResult], int]:
         """
@@ -129,8 +155,18 @@ class JudgeSystem:
         if best_idx < 0:
             return None, -1
 
-        # 判定结果
-        if best_diff <= self.config.perfect_window:
+        # 判定结果 - 更精细的判定
+        # COOL窗口（更严格的Perfect）
+        cool_window = self.config.perfect_window * 0.67  # 约±30ms
+        is_cool = False
+
+        if best_diff <= cool_window:
+            result = JudgeResult.PERFECT
+            score_add = self.config.perfect_score
+            self.combo += 1
+            self.stats.cool += 1  # Cool统计
+            is_cool = True
+        elif best_diff <= self.config.perfect_window:
             result = JudgeResult.PERFECT
             score_add = self.config.perfect_score
             self.combo += 1
@@ -161,7 +197,72 @@ class JudgeSystem:
         elif result == JudgeResult.BAD:
             self.stats.bad += 1
 
+        # 更新血条（非自动播放模式）
+        if not self._autoplay_mode:
+            self._update_health(result, current_sec, is_cool)
+
         return result, best_idx
+
+    def _update_health(self, result: JudgeResult, current_sec: float, is_cool: bool = False):
+        """更新血条"""
+        if result == JudgeResult.PERFECT:
+            heal = self.health_config.cool_heal if is_cool else self.health_config.perfect_heal
+            self.health = min(self.health_config.max_health,
+                            self.health + heal)
+        elif result == JudgeResult.GOOD:
+            self.health = min(self.health_config.max_health,
+                            self.health + self.health_config.good_heal)
+        elif result == JudgeResult.BAD:
+            self.health -= self.health_config.bad_damage
+            self._last_damage_time = current_sec
+        # Miss在check_missed中处理
+
+        # 检查死亡
+        if self.health <= 0:
+            self.health = 0
+            self._is_dead = True
+
+    def update_health_regen(self, dt: float, current_sec: float):
+        """更新自动回血（每帧调用）"""
+        if self._autoplay_mode or self._is_dead:
+            return
+
+        # 受伤后延迟回血
+        if current_sec - self._last_damage_time < self.health_config.regen_delay:
+            return
+
+        self.health = min(self.health_config.max_health,
+                         self.health + self.health_config.auto_regen_rate * dt)
+
+    def set_autoplay(self, enabled: bool):
+        """设置自动播放模式"""
+        self._autoplay_mode = enabled
+        if enabled:
+            # 自动播放模式血条满
+            self.health = self.health_config.max_health
+            self._is_dead = False
+
+    def is_autoplay(self) -> bool:
+        """是否为自动播放模式"""
+        return self._autoplay_mode
+
+    def is_dead(self) -> bool:
+        """是否死亡"""
+        return self._is_dead
+
+    def get_health_percent(self) -> float:
+        """获取血条百分比"""
+        return self.health / self.health_config.max_health
+
+    def get_win_rate(self) -> float:
+        """计算胜率（基于判定权重）"""
+        total = self.stats.total
+        if total == 0:
+            return 100.0
+        # PERFECT=100%, COOL=95%, GOOD=70%, BAD=30%, MISS=0%
+        weighted = (self.stats.perfect * 100 + self.stats.cool * 95 +
+                   self.stats.good * 70 + self.stats.bad * 30)
+        return weighted / total
 
     def check_missed(self, arrow_events: List, current_sec: float) -> List[int]:
         """
@@ -186,6 +287,14 @@ class JudgeSystem:
                 self.stats.miss += 1
                 self.combo = 0
                 missed_indices.append(i)
+
+                # 更新血条（非自动播放模式）
+                if not self._autoplay_mode:
+                    self.health -= self.health_config.miss_damage
+                    self._last_damage_time = current_sec
+                    if self.health <= 0:
+                        self.health = 0
+                        self._is_dead = True
 
         return missed_indices
 
@@ -272,6 +381,43 @@ class JudgeSystem:
     def get_max_combo(self) -> int:
         """获取最大连击"""
         return self.max_combo
+
+    def autoplay_judge(self, arrow_events: List, current_sec: float) -> List[Tuple[int, JudgeResult]]:
+        """
+        自动播放模式下的自动判定
+
+        Args:
+            arrow_events: 箭头事件列表
+            current_sec: 当前时间（秒）
+
+        Returns:
+            [(箭头索引, 判定结果), ...] 列表
+        """
+        if not self._autoplay_mode:
+            return []
+
+        results = []
+        for i, event in enumerate(arrow_events):
+            if i in self._arrow_states:
+                continue
+
+            # 当箭头接近判定线时自动击中
+            time_diff = event.start_sec - current_sec
+            if -0.02 <= time_diff <= 0.02:  # ±20ms内自动Perfect
+                self._arrow_states[i] = 1
+                self.stats.perfect += 1
+                self.combo += 1
+                self.max_combo = max(self.max_combo, self.combo)
+
+                # 自动播放也加分（但可选）
+                score_add = self.config.perfect_score
+                if self.combo >= self.config.combo_bonus_threshold:
+                    score_add = int(score_add * 1.1)
+                self.score += score_add
+
+                results.append((i, JudgeResult.PERFECT))
+
+        return results
 
 
 class JudgeDisplay:
