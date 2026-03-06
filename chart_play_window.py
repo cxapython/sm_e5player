@@ -938,32 +938,70 @@ class ChartPlayWindow(QWidget):
 
     def _draw_tap_arrow(self, painter: QPainter, track_idx: int, center_x: float, y: float,
                         single_track_w: int, judge_y: int):
-        """绘制点按箭头 - 只绘制判定线及以下、可视区域内的箭头"""
+        """绘制点按箭头 - 支持判定线裁剪"""
         h = self.height()
-        # 边界校验：只绘制判定线及以下、可视区域内的箭头（恢复原始逻辑）
-        if y < judge_y or y < 50 or y > h - 40:
+        # 不绘制完全在判定线以上或可视区域外的箭头
+        if y < 50 or y > h - 40:
             return
 
         tap_pix = self._tap_pixmaps[track_idx]
         if tap_pix:
-            # 按轨道宽度比例缩放箭头皮肤（保证不同分辨率下比例一致）
-            target_w = int(single_track_w * 0.60)  # 箭头宽度为轨道宽度的60%
-            target_w = max(22, target_w)  # 最小宽度限制，避免箭头过小
+            # 按轨道宽度比例缩放箭头皮肤
+            target_w = int(single_track_w * 0.60)
+            target_w = max(22, target_w)
             target_h = int(tap_pix.height() * (target_w / max(1, tap_pix.width())))
 
             scaled_pix = tap_pix.scaled(target_w, target_h,
                                         Qt.AspectRatioMode.KeepAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation)
-            # 绘制到箭头中心位置（居中对齐）
-            painter.drawPixmap(int(center_x - target_w // 2), int(y - target_h // 2), scaled_pix)
+
+            # 计算绘制位置
+            draw_x = int(center_x - target_w // 2)
+            draw_y = int(y - target_h // 2)
+
+            # 判定线裁剪：如果箭头部分在判定线以上，只显示判定线以下的部分
+            arrow_top = draw_y
+            arrow_bottom = draw_y + target_h
+
+            if arrow_top < judge_y:
+                # 箭头被判定线裁剪
+                if arrow_bottom <= judge_y:
+                    # 箭头完全在判定线以上，不绘制
+                    return
+                else:
+                    # 裁剪显示判定线以下的部分
+                    clip_top = judge_y - arrow_top  # 需要裁剪的高度
+                    clip_height = target_h - clip_top
+
+                    if clip_height > 0:
+                        # 裁剪图片
+                        clipped_pix = scaled_pix.copy(0, clip_top, target_w, clip_height)
+                        painter.drawPixmap(draw_x, judge_y, clipped_pix)
+            else:
+                # 箭头完全在判定线以下，正常绘制
+                painter.drawPixmap(draw_x, draw_y, scaled_pix)
         else:
-            # 无皮肤时绘制默认圆形箭头（兜底方案）
-            radius = max(9, min(22, single_track_w // 4))  # 半径限制在9-22px之间
-            # 绘制白色填充圆（箭头主体）
-            painter.setBrush(QBrush(QColor(240, 240, 245)))
-            # 绘制黑色描边（增强对比度）
-            painter.setPen(QPen(QColor(20, 20, 25), 3))
-            painter.drawEllipse(QPointF(center_x, y), radius, radius)
+            # 无皮肤时绘制默认圆形箭头
+            radius = max(9, min(22, single_track_w // 4))
+
+            # 判定线裁剪
+            arrow_top = y - radius
+            if arrow_top < judge_y:
+                if y + radius <= judge_y:
+                    return  # 完全在判定线以上
+                # 绘制裁剪的下半圆
+                clip_height = (y + radius) - judge_y
+                if clip_height > 0:
+                    painter.setBrush(QBrush(QColor(240, 240, 245)))
+                    painter.setPen(QPen(QColor(20, 20, 25), 3))
+                    # 绘制半圆或部分圆
+                    painter.drawPie(int(center_x - radius), int(y - radius),
+                                   int(radius * 2), int(radius * 2),
+                                   0, -180 * 16)  # 下半圆
+            else:
+                painter.setBrush(QBrush(QColor(240, 240, 245)))
+                painter.setPen(QPen(QColor(20, 20, 25), 3))
+                painter.drawEllipse(QPointF(center_x, y), radius, radius)
 
     def _draw_hold_arrow(self, painter: QPainter, track_idx: int, center_x: float,
                          y_start: float, y_end: float, single_track_w: int, judge_y: int):
