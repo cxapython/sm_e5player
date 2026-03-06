@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SM Arrow Player",
+  "version": "0.1.0",
+  "identifier": "com.sm-arrow-player",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SM Arrow Player",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "transparent": false,
+        "decorations": true,
+        "center": true,
+        "visible": true,
+        "focus": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/**",
+          "/Users/**",
+          "$RESOURCE/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Game",
+    "copyright": "MIT License",
+    "targets": "all",
+    "shortDescription": "E舞成名SM谱面播放器",
+    "longDescription": "高质量SM谱面播放器，支持iPhone 17玻璃拟态视觉风格，跨平台兼容",
+    "macOS": {
+      "minimumSystemVersion": "10.13"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {}
+}

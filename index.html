@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SM Arrow Player</title>
+    <style>
+      /* 基础重置 */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      /* 禁用文本选择 */
+      .no-select {
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      /* 滚动条样式 */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: rgba(30, 30, 50, 0.2);
+        border-radius: 3px;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgba(100, 100, 120, 0.5);
+        border-radius: 3px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(120, 120, 140, 0.7);
+      }
+    </style>
+  </head>
+  <body class="no-select">
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

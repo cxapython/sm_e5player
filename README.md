@@ -1,318 +1,354 @@
 # SM Arrow Player
 
-一个基于 Python + Pygame 的 StepMania 谱面可视化播放器，支持直接播放 `.sm` 格式谱面文件。
+一款基于 **Rust + Tauri 2.x + Svelte 5** 构建的现代音乐节奏游戏播放器，采用 iPhone 17 风格的玻璃拟态 UI 设计。
 
-## 功能特性
+## 技术架构
 
-- **歌曲浏览器界面**: 相册式左右滑动浏览，每页显示8首歌曲
-- **悬浮音频预览**: 鼠标悬停自动播放歌曲预览
-- **封面图片展示**: 自动加载 bn.jpg/banner.jpg 等封面图片
-- **星级显示**: 解析目录名中的星级信息（格式：`前缀#歌名#星级`）
-- **路径记忆**: 首次指定扫描路径后自动保存，后续启动自动加载
-- **直接播放 SM 谱面**: 无需转换格式，直接解析 `.sm` 文件
-- **自动音频识别**: 自动加载谱面同目录的音频文件（支持 mp3/ogg/wav）
-- **封面背景支持**: 自动加载 `bn.jpg`、`banner.jpg` 等封面图片作为背景
-- **可调节窗口**: 支持拖拽调整窗口大小，自适应布局
-- **动态判定效果**:
-  - 按键时判定区缩小动画
-  - 箭头接近判定区时高亮提示
-  - 命中后淡出+放大动画
-- **判定系统**: 支持 PERFECT/GOOD/BAD/MISS 四级判定
-- **NoteSkin 支持**: 兼容 StepMania 皮肤格式
+### 技术栈
+
+| 层级 | 技术 | 版本 |
+|------|------|------|
+| 后端核心 | Rust | 1.70+ |
+| 桌面框架 | Tauri | 2.x |
+| 前端框架 | Svelte | 5.x |
+| UI 样式 | TailwindCSS | 3.x |
+| 动画库 | GSAP | 3.x |
+| 构建工具 | Vite | 6.x |
+
+### 项目结构
+
+```
+sm_e5player/
+├── old/                    # 旧版 Python 代码 (已废弃)
+│   ├── main.py
+│   ├── sm_parser.py
+│   ├── audio_manager.py
+│   └── ...
+├── songs/                  # 歌曲目录 (SM 谱面文件)
+├── noteskin/               # 皮肤资源 (箭头贴图等)
+├── src/                    # Svelte 前端源码
+│   ├── lib/
+│   │   ├── components/     # UI 组件
+│   │   │   └── glass/      # 玻璃拟态组件
+│   │   │       ├── GlassCard.svelte
+│   │   │       ├── GlassButton.svelte
+│   │   │       ├── GlassSearch.svelte
+│   │   │       ├── StarRating.svelte
+│   │   │       └── SpectrumBar.svelte
+│   │   ├── stores/         # Svelte Stores (状态管理)
+│   │   │   ├── config.ts   # 配置状态
+│   │   │   ├── songs.ts    # 歌曲状态
+│   │   │   ├── player.ts   # 播放器状态
+│   │   │   └── types.ts    # 类型定义
+│   │   ├── utils/          # 工具函数
+│   │   │   └── noteskin.ts # Noteskin 加载和渲染
+│   │   └── views/          # 页面视图
+│   │       ├── SongSelectView.svelte  # 选歌界面
+│   │       └── PlayerView.svelte      # 游戏界面
+│   ├── app.css             # 全局样式
+│   ├── App.svelte          # 根组件
+│   └── main.ts             # 入口文件
+├── src-tauri/              # Rust 后端源码
+│   ├── src/
+│   │   ├── models/         # 数据模型
+│   │   │   ├── song.rs     # 歌曲信息
+│   │   │   ├── chart.rs    # 谱面数据
+│   │   │   ├── config.rs   # 配置结构
+│   │   │   └── timeline.rs # 时间轴
+│   │   ├── parser/         # 解析器模块
+│   │   │   ├── sm_parser.rs   # SM 文件解析
+│   │   │   └── timeline.rs    # BPM 时间轴计算
+│   │   ├── scanner/        # 文件扫描
+│   │   │   └── song_scanner.rs
+│   │   ├── audio/          # 音频管理
+│   │   │   └── audio_manager.rs
+│   │   ├── judge/          # 判定系统
+│   │   │   └── judge_system.rs
+│   │   ├── commands/       # Tauri 命令
+│   │   │   ├── config_commands.rs
+│   │   │   ├── song_commands.rs
+│   │   │   ├── player_commands.rs
+│   │   │   └── audio_commands.rs
+│   │   ├── config/         # 配置管理
+│   │   │   └── config_manager.rs
+│   │   ├── utils/          # 工具函数
+│   │   ├── lib.rs          # 库入口
+│   │   └── main.rs         # 程序入口
+│   ├── icons/              # 应用图标
+│   ├── Cargo.toml          # Rust 依赖
+│   └── tauri.conf.json     # Tauri 配置
+├── package.json            # npm 依赖
+├── vite.config.ts          # Vite 配置
+├── svelte.config.js        # Svelte 配置
+├── tailwind.config.js      # Tailwind 配置
+├── tsconfig.json           # TypeScript 配置
+└── README.md
+```
+
+## 核心功能模块
+
+### 1. SM 文件解析器 (`src-tauri/src/parser/sm_parser.rs`)
+
+解析 StepMania 格式的谱面文件 (.sm)，支持：
+- 歌曲元信息解析（标题、艺术家、BPM 等）
+- 多难度谱面解析
+- BPM 变化处理
+- 箭头事件提取（点按、长按、滚动箭头）
+
+### 2. 时间轴计算 (`src-tauri/src/parser/timeline.rs`)
+
+处理 BPM 变化，计算：
+- tick 与时间的相互转换
+- 拍号与时间的对应关系
+- 支持 BPM 渐变
+
+### 3. 歌曲扫描器 (`src-tauri/src/scanner/song_scanner.rs`)
+
+多线程异步扫描歌曲目录：
+- 自动识别 SM 文件
+- 智能匹配音频文件（支持 ogg, mp3, wav）
+- 自动匹配封面图片
+- 支持星级评分解析（从目录名提取）
+
+### 4. 判定系统 (`src-tauri/src/judge/judge_system.rs`)
+
+精确的判定逻辑：
+- PERFECT: ±45ms
+- GOOD: ±90ms
+- BAD: ±135ms
+- MISS: >135ms
+
+### 5. 音频管理 (`src-tauri/src/audio/audio_manager.rs`)
+
+简化的音频状态管理：
+- 播放状态追踪
+- 音量控制
+- 实际音频播放由前端 Web Audio API 处理
+
+### 6. 配置管理 (`src-tauri/src/config/config_manager.rs`)
+
+持久化配置存储：
+- 歌曲目录路径
+- 音量设置
+- 滚动速度
+- UI 偏好设置
+
+## 前端架构
+
+### 状态管理 (Svelte Stores)
+
+```typescript
+// 歌曲状态
+songsStore: {
+  songs: SongInfo[],
+  filteredSongs: SongInfo[],
+  currentPage: number,
+  isLoading: boolean,
+  searchQuery: string
+}
+
+// 播放器状态
+playerStore: {
+  currentSong: SongInfo | null,
+  chartData: ChartData | null,
+  gameState: 'loading' | 'ready' | 'playing' | 'paused' | 'finished',
+  currentTime: number,
+  score: number,
+  combo: number,
+  stats: JudgeStats
+}
+
+// 配置状态
+configStore: {
+  scan_path: string | null,
+  master_volume: number,
+  scroll_speed: number,
+  // ...
+}
+```
+
+### UI 组件
+
+采用玻璃拟态设计风格：
+- `GlassCard` - 玻璃效果卡片
+- `GlassButton` - 玻璃效果按钮
+- `GlassSearch` - 搜索输入框
+- `StarRating` - 星级评分显示
+- `SpectrumBar` - 音频频谱可视化
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.8+
-- 依赖库：`pygame`, `customtkinter`, `Pillow`
+- **Rust** 1.70+
+- **Node.js** 18+
+- **npm** 或 **pnpm**
 
 ### 安装依赖
 
 ```bash
-pip install pygame customtkinter Pillow
+# 安装前端依赖
+npm install
 
-# 可选：支持拖拽功能
-pip install tkinterdnd2
+# Rust 依赖会在构建时自动安装
 ```
 
-### 运行
+### 开发模式
 
 ```bash
-python main.py
+# 启动开发服务器
+npm run tauri dev
 ```
 
-或使用歌曲选择界面：
+### 构建发布
 
 ```bash
-python main.py
+# 构建生产版本
+npm run tauri build
+
+# macOS 生成 DMG 安装包
+# Windows 生成 MSI 安装包
+# Linux 生成 AppImage/Deb 包
 ```
 
-直接播放单个谱面文件：
+构建产物位于 `src-tauri/target/release/bundle/` 目录。
 
-```bash
-python sm_arrow_player.py
+## 配置说明
+
+### 应用配置 (`config.json`)
+
+首次运行会在应用数据目录创建配置文件：
+
+```json
+{
+  "scan_path": "/path/to/songs",
+  "master_volume": 0.8,
+  "scroll_speed": 840,
+  "offset": 0,
+  "star_filter_min": null,
+  "star_filter_max": null,
+  "card_columns_large": 4,
+  "card_columns_small": 2
+}
 ```
 
-### 使用方法
+### 歌曲目录格式
 
-1. 启动程序后，首次运行会提示选择歌曲目录
-2. 在歌曲浏览器中，鼠标悬停可预览音频，点击封面可进入谱面播放
-3. 使用左右按钮或键盘左右键切换页面
-4. 播放器中按空格键开始/暂停播放
+支持标准 StepMania 歌曲目录结构：
 
-## 快捷键
+```
+songs/
+├── SONG_FOLDER_NAME/
+│   ├── song.sm          # SM 谱面文件
+│   ├── song.ogg         # 音频文件
+│   └── banner.png       # 封面图片
+```
 
-### 歌曲浏览器
+目录名支持星级格式：`PREFIX#SONG_NAME#STAR`
+
+## 操作说明
+
+### 选歌界面
+
+- **鼠标点击** - 选择歌曲
+- **鼠标悬停** - 预览音频
+- **搜索框** - 输入关键词搜索
+- **星级筛选** - 快速筛选不同难度
+- **左右箭头** - 翻页
+
+### 游戏界面
 
 | 按键 | 功能 |
 |------|------|
-| `←` / `→` | 上一页/下一页 |
-| 鼠标悬停 | 预览音频 |
-| 点击封面 | 进入谱面播放 |
+| Z | 左下轨道 (DownLeft) |
+| Q | 左上轨道 (UpLeft) |
+| S | 中间轨道 (Center) |
+| W | 右上轨道 (UpRight) |
+| C | 右下轨道 (DownRight) |
+| 空格 | 暂停/继续 |
+| R | 重新开始 |
+| [ | 降低速度 |
+| ] | 提高速度 |
+| - | 减少 Offset |
+| = | 增加 Offset |
+| ← | 快退 5 秒 |
+| → | 快进 5 秒 |
+| Esc | 返回选歌 |
 
-### 谱面播放器
+### Noteskin 皮肤
 
-| 按键 | 功能 |
-|------|------|
-| `空格` | 暂停/继续播放 |
-| `R` | 从头重新播放 |
-| `←` / `→` | 快退/快进 5 秒 |
-| `[` / `]` | 降低/提高滚动速度 |
-| `-` / `=` | 调整音画偏移 (offset) |
-| `T` | 切换 tick/拍 设置 |
-| `M` | 切换 aType 映射（轨道映射） |
-| `Q/E/S/Z/C` | 游戏按键（对应五个轨道） |
-| `Esc` | 退出播放 |
-
-## 项目结构
-
-```
-sm_e5player/
-├── main.py                  # 主程序入口（歌曲浏览器）
-├── config_manager.py        # 配置管理模块
-├── directory_parser.py      # 目录/资源解析模块
-├── song_scanner.py          # 歌曲扫描模块
-├── ui_components.py         # UI组件模块
-├── audio_player.py          # 音频预览模块
-├── sm_arrow_player.py       # 谱面播放器核心
-├── config.json              # 配置文件（自动生成）
-├── noteskin/                # 皮肤资源目录
-│   ├── Center Tap Note (doubleres) 3x2.png
-│   ├── Center Hold Body active (doubleres) 6x1.png
-│   ├── Center Hold BottomCap active (doubleres) 6x1.png
-│   ├── Center Ready Receptor (doubleres) 1x3.png
-│   ├── UpLeft ...           # 左上轨道皮肤
-│   ├── UpRight ...          # 右上轨道皮肤
-│   ├── DownLeft ...         # 左下轨道皮肤
-│   ├── DownRight ...        # 右下轨道皮肤
-│   └── metrics.ini          # 皮肤配置（可选）
-├── songs/                   # 谱面目录
-│   └── [歌曲名]/
-│       ├── *.sm             # 谱面文件
-│       ├── *.mp3/ogg/wav    # 音频文件
-│       └── bn.jpg           # 封面图片（可选）
-└── README.md
-```
-
-## 模块说明
-
-| 模块 | 职责 |
-|------|------|
-| `main.py` | 程序入口，整合所有模块，实现歌曲浏览和播放功能 |
-| `config_manager.py` | 配置文件读写，保存路径、音量、页码等设置 |
-| `directory_parser.py` | 解析目录名称、提取星级信息、查找资源文件 |
-| `song_scanner.py` | 扫描指定目录下的所有歌曲文件夹 |
-| `ui_components.py` | UI组件，包括歌曲卡片和浏览器主界面 |
-| `audio_player.py` | 音频预览播放，支持悬停延迟播放 |
-| `sm_arrow_player.py` | 谱面播放器核心，解析SM文件并渲染游戏画面 |
-
-## 架构说明
-
-### 整体架构
+游戏支持自定义箭头皮肤，放置在 `noteskin/` 目录：
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      SMPlayerApp (主应用)                     │
-│  - 首次运行路径选择                                            │
-│  - 歌曲浏览器界面                                              │
-│  - 播放器启动                                                  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-     │ConfigManager│  │ SongScanner │  │AudioPreview │
-     │  配置管理    │  │  歌曲扫描    │  │  音频预览   │
-     └─────────────┘  └─────────────┘  └─────────────┘
-                              │
-                              ▼
-                     ┌─────────────┐
-                     │ SongBrowser │
-                     │  歌曲浏览器  │
-                     │  (UI组件)   │
-                     └─────────────┘
-                              │
-                              ▼
-                     ┌─────────────┐
-                     │ ArrowPlayer │
-                     │  谱面播放器  │
-                     └─────────────┘
+noteskin/
+├── DownLeft Tap Note (doubleres) 3x2.png
+├── DownLeft Hold Body active (doubleres) 6x1.png
+├── DownLeft Hold BottomCap active (doubleres) 6x1.png
+├── DownLeft Ready Receptor (doubleres) 1x3.png
+├── UpLeft Tap Note (doubleres) 3x2.png
+├── ... (UpLeft, Center 方向)
 ```
 
-### 谱面播放器核心类
+- **右侧箭头** (UpRight, DownRight) 自动通过水平翻转左侧图片实现
+- 支持 3x2、6x1、1x3 等精灵图格式
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     ArrowPlayer (播放器核心)                   │
-│                                                              │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ SM 解析模块  │  │  播放控制   │  │     渲染模块        │  │
-│  │             │  │             │  │                     │  │
-│  │ parse_sm    │  │ play/pause  │  │ draw()              │  │
-│  │ parse_bpm   │  │ set_chart   │  │ _draw_background    │  │
-│  │ parse_notes │  │ _update_*   │  │ _draw_track_*       │  │
-│  └─────────────┘  └─────────────┘  │ _draw_arrows        │  │
-│                                    │ _draw_receptor      │  │
-│  ┌─────────────┐  ┌─────────────┐  │ _draw_judge_*       │  │
-│  │ 判定系统    │  │  皮肤管理   │  └─────────────────────┘  │
-│  │             │  │             │                           │
-│  │ _try_judge  │  │ SkinResource│                           │
-│  │ _check_miss │  │ get_tap_*   │                           │
-│  │ hit_anim    │  │ get_hold_*  │                           │
-│  └─────────────┘  └─────────────┘                           │
-└─────────────────────────────────────────────────────────────┘
-```
+## 性能优化
 
-### 数据流
+- **Rust 后端**：高性能 SM 解析和多线程文件扫描
+- **Canvas 渲染**：60 FPS 流畅游戏体验
+- **Web Audio API**：低延迟音频播放
+- **虚拟列表**：大量歌曲时内存优化
+- **懒加载**：按需加载谱面数据
 
-```
-SM文件 → parse_sm_file() → SmChartInfo + SmNotesBlock
-                                    │
-                                    ▼
-                    parse_sm_arrow_events() → event_table
-                                    │
-                                    ▼
-                    build_arrow_events() → List[ArrowEvent]
-                                    │
-                                    ▼
-                            渲染循环 (main_loop)
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-              输入处理         时间更新         画面渲染
-           (按键判定)      (箭头位置计算)   (皮肤+动画绘制)
+## 开发指南
+
+### 添加新的 Tauri 命令
+
+1. 在 `src-tauri/src/commands/` 中定义命令函数：
+
+```rust
+#[tauri::command]
+pub fn my_new_command(param: String) -> Result<MyResult, String> {
+    // 实现
+}
 ```
 
-### 目录命名规范
+2. 在 `src-tauri/src/lib.rs` 中注册：
 
-歌曲目录名支持 `#` 分隔格式，用于显示星级：
-
-```
-SPEED_DEVIL#PLAY_js_2106#8
-     ↑           ↑        ↑
-   前缀        歌名     星级
-
-显示效果：PLAY_js_2106  ★☆☆☆☆ 8
+```rust
+.invoke_handler(tauri::generate_handler![
+    // ...
+    commands::my_module::my_new_command,
+])
 ```
 
-无 `#` 分隔的目录名则直接显示，不显示星级。
+### 添加新的前端组件
 
-### SM 文件解析
+在 `src/lib/components/` 下创建 Svelte 组件，使用 Svelte 5 runes 语法：
 
-SM 文件解析流程：
+```svelte
+<script lang="ts">
+  interface Props {
+    title: string;
+    onClick?: () => void;
+  }
 
-1. **解析头部信息**: `#TITLE`, `#OFFSET`, `#BPMS` 等标签
-2. **解析 NOTES 区块**: 获取小节数据
-3. **符号解析**:
-   - `0` = 空
-   - `1` = 点按 (tap)
-   - `2`/`4` = 长按开始 (hold start)
-   - `3` = 长按结束 (hold end)
-4. **时间转换**: 将 beat 位置转换为秒数
+  let { title, onClick }: Props = $props();
+  let count = $state(0);
+</script>
 
-### 皮肤系统
-
-皮肤文件命名规范：
-
-```
-{Direction} {Type} (doubleres) {Grid}.png
-
-Direction: DownLeft | UpLeft | Center | UpRight | DownRight
-Type:      Tap Note | Hold Body | Hold BottomCap | Ready Receptor
-Grid:      3x2 | 6x1 | 1x3 (列x行)
+<button onclick={onClick}>
+  {title}: {count}
+</button>
 ```
 
-皮肤加载优先级：
-1. 直接加载对应方向
-2. 右侧轨道自动翻转左侧轨道图片（UpRight 翻转 UpLeft）
+## 技术特点
 
-### 判定系统
-
-```
-判定窗口:
-  PERFECT: ±45ms
-  GOOD:    ±90ms
-  BAD:     ±135ms
-  MISS:    >135ms
-```
-
-## 文件格式支持
-
-### SM 文件格式
-
-```sm
-#TITLE:歌曲名称;
-#OFFSET:-0.023;
-#BPMS:0.000=150.000;
-#NOTES:
-dance-single:
-:
-Beginner:
-3:
-0.000,0.000,0.000,0.000,0.000:
-0000
-1000
-0000
-0000
-;
-```
-
-### 封面图片
-
-程序自动查找以下文件名作为封面背景：
-- `bn.jpg`, `BN.jpg`
-- `banner.jpg`, `Banner.jpg`
-- `bn.png`, `bann.jpg`
-
-## 扩展开发
-
-### 添加新功能建议
-
-1. **连击音效**: 在 `_try_judge_arrow()` 中添加音效播放
-2. **谱面难度选择**: 解析多个 `#NOTES` 区块，添加选择界面
-3. **回放功能**: 记录按键时间，支持回放
-4. **分数系统**: 扩展判定权重，计算最终得分
-
-### 自定义皮肤
-
-1. 将皮肤文件放入 `noteskin/` 目录
-2. 确保 PNG 格式，支持透明通道
-3. 命名遵循 `{Direction} {Type} (doubleres) {Grid}.png` 格式
-
-## 已知问题
-
-- 部分 SM 文件的 BPM 变化可能解析不正确，可按 `T` 键切换 tick 设置
-- 长按判定目前简化为点按处理，后续可扩展
-
-## 依赖说明
-
-| 库 | 用途 |
-|---|------|
-| pygame | 游戏引擎、渲染、音频播放 |
-| customtkinter | 歌曲浏览器 UI |
-| Pillow | 封面图片处理 |
-| tkinterdnd2 | 拖拽文件支持（可选） |
+1. **跨平台**：支持 macOS、Windows、Linux
+2. **原生性能**：Rust 后端，低内存占用
+3. **现代 UI**：玻璃拟态设计，流畅动画
+4. **模块化**：清晰的前后端分离架构
+5. **类型安全**：Rust + TypeScript 全栈类型系统
 
 ## 许可证
 
@@ -320,5 +356,6 @@ MIT License
 
 ## 致谢
 
-- StepMania 社区的 NoteSkin 格式
-- E5 皮肤资源
+- StepMania 社区 - SM 文件格式规范
+- Tauri 团队 - 优秀的桌面应用框架
+- Svelte 团队 - 响应式前端框架
