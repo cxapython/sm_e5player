@@ -825,18 +825,16 @@ class ChartPlayWindow(QWidget):
                 painter.drawLine(x + 1, start_y + 10, x + 1, start_y + height - 10)
 
     def _draw_judge_line(self, painter: QPainter, track_start_x: int, track_total_w: int, judge_y: int):
-        """绘制判定线（恢复原始的横向线+光晕效果）"""
-        # 绘制主判定线
-        painter.setPen(QPen(QColor(200, 200, 210), 3))
-        painter.drawLine(track_start_x - 10, judge_y, track_start_x + track_total_w + 10, judge_y)
-
-        # 判定线光晕效果
-        for i in range(3):
-            alpha = 60 - i * 15
-            glow_color = QColor(255, 255, 255, alpha)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(glow_color))
-            painter.drawRect(track_start_x - 10, judge_y - 4 + i * 2, track_total_w + 20, 8)
+        """绘制判定区效果（隐藏横向线，只保留微妙的光晕）"""
+        # 只在判定位置显示微妙的光晕效果，不绘制明显的横线
+        pulse_x = track_start_x + track_total_w // 2
+        pulse_gradient = QRadialGradient(pulse_x, judge_y, 25)
+        pulse_gradient.setColorAt(0, QColor(255, 255, 255, 30))
+        pulse_gradient.setColorAt(0.5, QColor(150, 200, 255, 15))
+        pulse_gradient.setColorAt(1, QColor(100, 150, 255, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(pulse_gradient))
+        painter.drawEllipse(QPointF(pulse_x, judge_y), track_total_w // 2, 15)
 
     def _draw_receptor(self, painter: QPainter, track_idx: int, track_start_x: int,
                        single_track_w: int, judge_y: int):
