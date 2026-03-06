@@ -840,10 +840,33 @@ class ChartPlayWindow(QWidget):
 
     def _draw_receptor(self, painter: QPainter, track_idx: int, track_start_x: int,
                        single_track_w: int, judge_y: int):
-        """绘制判定区"""
+        """绘制判定区（含接近提示和判定光）"""
         center_x = track_start_x + track_idx * single_track_w + single_track_w // 2
 
-        # 判定光
+        # 检测是否有箭头接近判定区（用于高亮提示）
+        approaching_arrow = False
+        for i, event in enumerate(self._arrow_events):
+            if self._judge_system.is_arrow_processed(i):
+                continue
+            if event.track_idx != track_idx:
+                continue
+            # 检测箭头是否在判定区附近（±0.15秒内）
+            time_diff = event.start_sec - self._current_sec
+            if -0.05 <= time_diff <= 0.15:
+                approaching_arrow = True
+                break
+
+        # 绘制接近提示光晕
+        if approaching_arrow:
+            for k in range(3):
+                r = int(single_track_w * (0.25 + 0.1 * k))
+                alpha = 60 - k * 15
+                color = QColor(100, 200, 255, max(0, alpha))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawEllipse(QPointF(center_x, judge_y), r, r)
+
+        # 绘制判定光（命中时的闪光效果）
         light_strength = self._judge_light.get_light(track_idx)
         if light_strength > 0:
             for k in range(5):
