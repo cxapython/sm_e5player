@@ -8,7 +8,7 @@
 import os
 import re
 from typing import Optional, List, Dict, Tuple
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QTransform
 from PyQt6.QtCore import Qt
 
 
@@ -166,8 +166,10 @@ class SkinManager:
         if pix is None or pix.isNull():
             return None
 
-        # 使用QPixmap.mirrored进行水平翻转 (horizontal=True, vertical=False)
-        flipped = pix.mirrored(True, False)
+        # 使用QTransform进行水平翻转
+        transform = QTransform()
+        transform.scale(-1, 1)  # 水平翻转
+        flipped = pix.transformed(transform, Qt.TransformationMode.SmoothTransformation)
         self._flip_cache[cache_key] = flipped
         return flipped
 
