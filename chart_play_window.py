@@ -391,7 +391,7 @@ class ChartPlayWindow(QWidget):
             self._key_pressed[track_idx] = True
 
             if self._game_state == GameState.PLAYING:
-                result = self._judge_system.judge(
+                result, arrow_idx = self._judge_system.judge(
                     self._arrow_events,
                     track_idx,
                     self._current_sec
@@ -399,8 +399,8 @@ class ChartPlayWindow(QWidget):
                 if result:
                     self._judge_light.trigger(track_idx)
                     self._judge_display.show(result)
-                    # 触发命中效果（使用当前时间最近的箭头索引）
-                    self._hit_effect.trigger(arrow_idx=0, track_idx=track_idx)
+                    # 触发命中效果
+                    self._hit_effect.trigger(arrow_idx=arrow_idx, track_idx=track_idx)
             event.accept()
             return
 
@@ -724,7 +724,8 @@ class ChartPlayWindow(QWidget):
         single_track_w = track_total_w // track_count
 
         header_h = 80
-        judge_y = int(h * 0.12) + header_h
+        # 判定线位置（窗口高度的18%位置 + 顶部高度，更靠上）- 恢复原始位置
+        judge_y = int(h * 0.18) + header_h
         footer_h = 50
 
         # 绘制轨道背景
@@ -824,16 +825,18 @@ class ChartPlayWindow(QWidget):
                 painter.drawLine(x + 1, start_y + 10, x + 1, start_y + height - 10)
 
     def _draw_judge_line(self, painter: QPainter, track_start_x: int, track_total_w: int, judge_y: int):
-        """绘制判定区效果（不显示横向线）"""
-        # 只在判定位置显示微妙的光晕效果，不绘制明显的横线
-        pulse_x = track_start_x + track_total_w // 2
-        pulse_gradient = QRadialGradient(pulse_x, judge_y, 25)
-        pulse_gradient.setColorAt(0, QColor(255, 255, 255, 30))
-        pulse_gradient.setColorAt(0.5, QColor(150, 200, 255, 15))
-        pulse_gradient.setColorAt(1, QColor(100, 150, 255, 0))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(pulse_gradient))
-        painter.drawEllipse(QPointF(pulse_x, judge_y), track_total_w // 2, 15)
+        """绘制判定线（恢复原始的横向线+光晕效果）"""
+        # 绘制主判定线
+        painter.setPen(QPen(QColor(200, 200, 210), 3))
+        painter.drawLine(track_start_x - 10, judge_y, track_start_x + track_total_w + 10, judge_y)
+
+        # 判定线光晕效果
+        for i in range(3):
+            alpha = 60 - i * 15
+            glow_color = QColor(255, 255, 255, alpha)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(glow_color))
+            painter.drawRect(track_start_x - 10, judge_y - 4 + i * 2, track_total_w + 20, 8)
 
     def _draw_receptor(self, painter: QPainter, track_idx: int, track_start_x: int,
                        single_track_w: int, judge_y: int):
@@ -885,7 +888,7 @@ class ChartPlayWindow(QWidget):
         cur_sec = self._current_sec
 
         for idx, event in enumerate(self._arrow_events):
-            # 跳过已处理的箭头（有命中效果的不跳过）
+            # 跳过已处理的箭头（有命中动画的不跳过，让动画显示）
             if self._judge_system.is_arrow_processed(idx) and idx not in self._hit_effect._effects:
                 continue
 
@@ -894,13 +897,17 @@ class ChartPlayWindow(QWidget):
             if event.start_sec > cur_sec + advance_sec:
                 break
 
+            # 绘制命中动画（在其他箭头之上）
+            if idx in self._hit_effect._effects:
+                continue  # 命中动画单独绘制
+
             center_x = track_start_x + event.track_idx * single_track_w + single_track_w // 2
             dy_start = (event.start_sec - cur_sec) * self._scroll_speed
             y_start = judge_y + dy_start
 
-            # 点按箭头
+            # 点按箭头 - 只绘制判定线及以下的箭头（原始逻辑）
             if abs(event.end_sec - event.start_sec) < 1e-6:
-                if y_start >= judge_y - 100 and y_start <= bottom_y:
+                if y_start >= judge_y and y_start <= bottom_y:
                     self._draw_tap_arrow(painter, event.track_idx, center_x, y_start, single_track_w, judge_y)
             # 长按箭头
             else:
@@ -910,26 +917,31 @@ class ChartPlayWindow(QWidget):
 
     def _draw_tap_arrow(self, painter: QPainter, track_idx: int, center_x: float, y: float,
                         single_track_w: int, judge_y: int):
-        """绘制点按箭头"""
+        """绘制点按箭头 - 只绘制判定线及以下、可视区域内的箭头"""
         h = self.height()
-        if y < judge_y - 100 or y > h - 40:
+        # 边界校验：只绘制判定线及以下、可视区域内的箭头（恢复原始逻辑）
+        if y < judge_y or y < 50 or y > h - 40:
             return
 
         tap_pix = self._tap_pixmaps[track_idx]
         if tap_pix:
-            base_w = int(single_track_w * 0.60)
-            base_w = max(22, base_w)
-            target_w = base_w
+            # 按轨道宽度比例缩放箭头皮肤（保证不同分辨率下比例一致）
+            target_w = int(single_track_w * 0.60)  # 箭头宽度为轨道宽度的60%
+            target_w = max(22, target_w)  # 最小宽度限制，避免箭头过小
             target_h = int(tap_pix.height() * (target_w / max(1, tap_pix.width())))
 
             scaled_pix = tap_pix.scaled(target_w, target_h,
                                         Qt.AspectRatioMode.KeepAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation)
+            # 绘制到箭头中心位置（居中对齐）
             painter.drawPixmap(int(center_x - target_w // 2), int(y - target_h // 2), scaled_pix)
         else:
-            radius = max(9, min(22, single_track_w // 4))
-            painter.setPen(QPen(QColor(20, 20, 25), 3))
+            # 无皮肤时绘制默认圆形箭头（兜底方案）
+            radius = max(9, min(22, single_track_w // 4))  # 半径限制在9-22px之间
+            # 绘制白色填充圆（箭头主体）
             painter.setBrush(QBrush(QColor(240, 240, 245)))
+            # 绘制黑色描边（增强对比度）
+            painter.setPen(QPen(QColor(20, 20, 25), 3))
             painter.drawEllipse(QPointF(center_x, y), radius, radius)
 
     def _draw_hold_arrow(self, painter: QPainter, track_idx: int, center_x: float,
@@ -1012,20 +1024,39 @@ class ChartPlayWindow(QWidget):
             self._draw_tap_arrow(painter, track_idx, center_x, orig_y1, single_track_w, judge_y)
 
     def _draw_hit_effects(self, painter: QPainter, track_start_x: int, single_track_w: int, judge_y: int):
-        """绘制命中效果"""
+        """绘制命中效果（箭头命中时向上飘动的动画）"""
         for idx, effect in self._hit_effect.get_effects().items():
-            if idx >= len(self._arrow_events):
-                continue
-            event = self._arrow_events[idx]
-            center_x = track_start_x + event.track_idx * single_track_w + single_track_w // 2
-            y_pos = judge_y - effect["y"] * (1 - effect["alpha"] * 0.5)
+            track_idx = effect.get("track_idx", 0)
+            center_x = track_start_x + track_idx * single_track_w + single_track_w // 2
+            # 动画位置：从判定线向上飘
+            y_offset = effect.get("y", 0)
+            y_pos = judge_y - y_offset * (1 - effect["alpha"] * 0.5)
 
-            # 简化效果绘制
+            # 绘制带动画效果的箭头
             alpha = int(effect["alpha"] * 255)
-            radius = int(single_track_w * 0.3 * effect["scale"])
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(255, 255, 200, alpha)))
-            painter.drawEllipse(QPointF(center_x, y_pos), radius, radius)
+            scale = effect["scale"]
+
+            tap_pix = self._tap_pixmaps[track_idx] if track_idx < len(self._tap_pixmaps) else None
+            if tap_pix:
+                base_w = int(single_track_w * 0.60)
+                base_w = max(22, base_w)
+                target_w = int(base_w * scale)
+                target_h = int(tap_pix.height() * (target_w / max(1, tap_pix.width())))
+
+                scaled_pix = tap_pix.scaled(target_w, target_h,
+                                            Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.SmoothTransformation)
+                # 设置透明度
+                painter.setOpacity(effect["alpha"])
+                painter.drawPixmap(int(center_x - target_w // 2), int(y_pos - target_h // 2), scaled_pix)
+                painter.setOpacity(1.0)
+            else:
+                # 无皮肤时的动画效果
+                radius = int(max(9, min(22, single_track_w // 4)) * scale)
+                color = QColor(240, 240, 245, alpha)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawEllipse(QPointF(center_x, y_pos), radius, radius)
 
     def _draw_judge_display(self, painter: QPainter, judge_y: int):
         """绘制判定显示"""

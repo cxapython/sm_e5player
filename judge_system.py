@@ -97,7 +97,7 @@ class JudgeSystem:
         self.stats = JudgeStats()
         self._arrow_states: Dict[int, int] = {}  # arrow_idx -> state (0=未处理, 1=已命中, 2=已miss)
 
-    def judge(self, arrow_events: List, track_idx: int, current_sec: float) -> Optional[JudgeResult]:
+    def judge(self, arrow_events: List, track_idx: int, current_sec: float) -> Tuple[Optional[JudgeResult], int]:
         """
         尝试判定指定轨道上的箭头
 
@@ -107,7 +107,7 @@ class JudgeSystem:
             current_sec: 当前时间（秒）
 
         Returns:
-            判定结果，未命中返回None
+            (判定结果, 箭头索引)，未命中返回(None, -1)
         """
         best_idx = -1
         best_diff = float('inf')
@@ -127,7 +127,7 @@ class JudgeSystem:
                 best_idx = i
 
         if best_idx < 0:
-            return None
+            return None, -1
 
         # 判定结果
         if best_diff <= self.config.perfect_window:
@@ -161,7 +161,7 @@ class JudgeSystem:
         elif result == JudgeResult.BAD:
             self.stats.bad += 1
 
-        return result
+        return result, best_idx
 
     def check_missed(self, arrow_events: List, current_sec: float) -> List[int]:
         """
@@ -354,6 +354,7 @@ class HitEffect:
                 # 淡出 + 缩放
                 effect["alpha"] = 1.0 - progress
                 effect["scale"] = 1.0 + progress * 0.3  # 放大到1.3倍
+                effect["y"] = effect.get("y", 0) + dt * 50  # 向上飘动效果
 
         for idx in to_remove:
             del self._effects[idx]
