@@ -109,6 +109,11 @@ class ChartPlayWindow(QWidget):
         # 滚动速度
         self._scroll_speed = config.get_scroll_speed()
 
+        # 箭头/判定区缩放比例（可通过+/-调整）
+        self._arrow_scale = 1.0
+        # 箭头间距压缩比例（0.3-1.2，越小越紧凑，基于箭头大小的倍数）
+        self._arrow_spacing = 0.8
+
         # 判定系统
         self._judge_system = JudgeSystem()
         self._judge_display = JudgeDisplay()
@@ -138,6 +143,9 @@ class ChartPlayWindow(QWidget):
         # 游戏定时器
         self._game_timer = QTimer(self)
         self._game_timer.timeout.connect(self._update_game)
+
+        # 连接音频时长变化信号
+        self._audio_manager.music_duration_changed.connect(self._on_audio_duration_changed)
 
         # 帧率计时
         self._elapsed_timer = QElapsedTimer()
@@ -244,6 +252,11 @@ class ChartPlayWindow(QWidget):
                 self._hold_body_pixmaps[i] = self._skin.get_hold_body_pix(i)
                 self._hold_tail_pixmaps[i] = self._skin.get_hold_tail_pix(i)
                 self._receptor_pixmaps[i] = self._skin.get_receptor_pix(i)
+
+    def _on_audio_duration_changed(self, duration_ms: int):
+        """音频时长变化时更新总时长"""
+        if duration_ms > 0:
+            self._total_sec = duration_ms / 1000.0
 
     def _load_banner(self):
         """加载封面图片"""
@@ -471,6 +484,32 @@ class ChartPlayWindow(QWidget):
 
         elif key == Qt.Key.Key_BracketRight:
             self._scroll_speed = min(2000.0, self._scroll_speed + 60.0)
+            event.accept()
+            return
+
+        # 调整箭头大小 + 和 -
+        elif key == Qt.Key.Key_Plus or key == Qt.Key.Key_Equal:
+            self._arrow_scale = min(2.0, self._arrow_scale + 0.1)
+            self.update()
+            event.accept()
+            return
+
+        elif key == Qt.Key.Key_Minus:
+            self._arrow_scale = max(0.5, self._arrow_scale - 0.1)
+            self.update()
+            event.accept()
+            return
+
+        # 调整箭头间距 , 和 .
+        elif key == Qt.Key.Key_Comma:
+            self._arrow_spacing = max(0.3, self._arrow_spacing - 0.1)
+            self.update()  # 刷新界面
+            event.accept()
+            return
+
+        elif key == Qt.Key.Key_Period:
+            self._arrow_spacing = min(1.2, self._arrow_spacing + 0.1)
+            self.update()  # 刷新界面
             event.accept()
             return
 
@@ -718,8 +757,11 @@ class ChartPlayWindow(QWidget):
         # 布局计算
         margin = 20
         track_count = 5
-        track_total_w = min(620, w - 280)
-        track_total_w = max(400, track_total_w)
+        # 轨道宽度（受缩放影响）
+        base_track_w = min(620, w - 280)
+        base_track_w = max(400, base_track_w)
+        track_total_w = int(base_track_w * self._arrow_scale)
+        track_total_w = max(300, min(track_total_w, w - 200))
         track_start_x = (w - track_total_w) // 2
         single_track_w = track_total_w // track_count
 
@@ -728,7 +770,21 @@ class ChartPlayWindow(QWidget):
         judge_y = int(h * 0.18) + header_h
         footer_h = 50
 
-        # 绘制轨道背景
+        # 计算箭头实际位置（压缩间距，中间居中）
+        # 基于箭头大小计算间距，让效果更明显
+        arrow_size = int(single_track_w * 0.60 * self._arrow_scale)
+        # 间距系数：1.0 = 箭头边缘相接，0.5 = 一半重叠
+        arrow_spacing = int(arrow_size * self._arrow_spacing)
+        arrow_center_x = w // 2  # 屏幕中央
+
+        def get_arrow_x(track_idx: int) -> int:
+            """获取压缩后的箭头x坐标"""
+            # 轨道索引: 0=左下, 1=左上, 2=中, 3=右上, 4=右下
+            # 相对于中心的位置: -2, -1, 0, +1, +2
+            offset = (track_idx - 2) * arrow_spacing
+            return arrow_center_x + offset
+
+        # 绘制轨道背景（使用原有宽度，但居中）
         self._draw_track_background(painter, track_start_x, header_h,
                                    track_total_w, h - footer_h - header_h,
                                    single_track_w, track_count)
@@ -738,13 +794,14 @@ class ChartPlayWindow(QWidget):
 
         # 绘制判定区
         for i in range(track_count):
-            self._draw_receptor(painter, i, track_start_x, single_track_w, judge_y)
+            center_x = get_arrow_x(i)
+            self._draw_receptor(painter, i, center_x, single_track_w, judge_y)
 
         # 绘制箭头
-        self._draw_arrows(painter, track_start_x, single_track_w, judge_y)
+        self._draw_arrows(painter, get_arrow_x, single_track_w, judge_y)
 
         # 绘制命中效果
-        self._draw_hit_effects(painter, track_start_x, single_track_w, judge_y)
+        self._draw_hit_effects(painter, get_arrow_x, single_track_w, judge_y)
 
         # 绘制判定显示
         self._draw_judge_display(painter, judge_y)
@@ -836,10 +893,9 @@ class ChartPlayWindow(QWidget):
         painter.setBrush(QBrush(pulse_gradient))
         painter.drawEllipse(QPointF(pulse_x, judge_y), track_total_w // 2, 15)
 
-    def _draw_receptor(self, painter: QPainter, track_idx: int, track_start_x: int,
+    def _draw_receptor(self, painter: QPainter, track_idx: int, center_x: int,
                        single_track_w: int, judge_y: int):
         """绘制判定区（含接近提示和判定光）"""
-        center_x = track_start_x + track_idx * single_track_w + single_track_w // 2
 
         # 检测是否有箭头接近判定区（用于高亮提示）
         approaching_arrow = False
@@ -878,7 +934,7 @@ class ChartPlayWindow(QWidget):
         # 判定区皮肤
         receptor_pix = self._receptor_pixmaps[track_idx]
         if receptor_pix:
-            base_w = int(single_track_w * 0.55)
+            base_w = int(single_track_w * 0.55 * self._arrow_scale)
             scale_factor = 0.85 if self._key_pressed[track_idx] else 1.0
             target_w = int(base_w * scale_factor)
             scale = target_w / max(1, receptor_pix.width())
@@ -891,7 +947,7 @@ class ChartPlayWindow(QWidget):
             painter.drawPixmap(center_x - target_w // 2, judge_y - target_h // 2 + y_offset, scaled_pix)
         else:
             # 默认判定区
-            radius = int(single_track_w * 0.22)
+            radius = int(single_track_w * 0.22 * self._arrow_scale)
             if self._key_pressed[track_idx]:
                 radius = int(radius * 0.85)
             color = QColor(80, 80, 100) if self._key_pressed[track_idx] else QColor(60, 60, 80)
@@ -899,7 +955,7 @@ class ChartPlayWindow(QWidget):
             painter.setBrush(QBrush(color))
             painter.drawEllipse(QPointF(center_x, judge_y), radius, radius)
 
-    def _draw_arrows(self, painter: QPainter, track_start_x: int, single_track_w: int, judge_y: int):
+    def _draw_arrows(self, painter: QPainter, get_arrow_x, single_track_w: int, judge_y: int):
         """绘制箭头"""
         h = self.height()
         bottom_y = h - 50
@@ -922,7 +978,7 @@ class ChartPlayWindow(QWidget):
             if idx in self._hit_effect._effects:
                 continue  # 命中动画单独绘制
 
-            center_x = track_start_x + event.track_idx * single_track_w + single_track_w // 2
+            center_x = get_arrow_x(event.track_idx)
             dy_start = (event.start_sec - cur_sec) * self._scroll_speed
             y_start = judge_y + dy_start
 
@@ -947,7 +1003,7 @@ class ChartPlayWindow(QWidget):
         tap_pix = self._tap_pixmaps[track_idx]
         if tap_pix:
             # 按轨道宽度比例缩放箭头皮肤
-            target_w = int(single_track_w * 0.60)
+            target_w = int(single_track_w * 0.60 * self._arrow_scale)
             target_w = max(22, target_w)
             target_h = int(tap_pix.height() * (target_w / max(1, tap_pix.width())))
 
@@ -982,7 +1038,7 @@ class ChartPlayWindow(QWidget):
                 painter.drawPixmap(draw_x, draw_y, scaled_pix)
         else:
             # 无皮肤时绘制默认圆形箭头
-            radius = max(9, min(22, single_track_w // 4))
+            radius = max(9, min(22, int(single_track_w // 4 * self._arrow_scale)))
 
             # 判定线裁剪
             arrow_top = y - radius
@@ -1021,7 +1077,7 @@ class ChartPlayWindow(QWidget):
         if y2c <= y1c:
             return
 
-        body_w = int(single_track_w * 0.50)
+        body_w = int(single_track_w * 0.50 * self._arrow_scale)
         body_w = max(20, body_w)
 
         # 绘制长按箭身
@@ -1061,7 +1117,7 @@ class ChartPlayWindow(QWidget):
 
         if tail_y >= judge_y and tail_y >= 50:
             if hold_tail_pix:
-                tail_w = int(single_track_w * 0.55)
+                tail_w = int(single_track_w * 0.55 * self._arrow_scale)
                 tail_w = max(22, tail_w)
                 scale = tail_w / max(1, hold_tail_pix.width())
                 tail_h = int(hold_tail_pix.height() * scale)
@@ -1071,7 +1127,7 @@ class ChartPlayWindow(QWidget):
                                                 Qt.TransformationMode.SmoothTransformation)
                 painter.drawPixmap(int(center_x - tail_w // 2), int(tail_y - tail_h // 2), tail_pix)
             else:
-                tail_w = int(single_track_w * 0.35)
+                tail_w = int(single_track_w * 0.35 * self._arrow_scale)
                 tail_h = max(8, tail_w // 2)
                 rect = QRectF(center_x - tail_w // 2, tail_y - tail_h, tail_w, tail_h)
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -1082,11 +1138,11 @@ class ChartPlayWindow(QWidget):
         if orig_y1 >= judge_y:
             self._draw_tap_arrow(painter, track_idx, center_x, orig_y1, single_track_w, judge_y)
 
-    def _draw_hit_effects(self, painter: QPainter, track_start_x: int, single_track_w: int, judge_y: int):
+    def _draw_hit_effects(self, painter: QPainter, get_arrow_x, single_track_w: int, judge_y: int):
         """绘制命中效果（箭头命中时向上飘动的动画）"""
         for idx, effect in self._hit_effect.get_effects().items():
             track_idx = effect.get("track_idx", 0)
-            center_x = track_start_x + track_idx * single_track_w + single_track_w // 2
+            center_x = get_arrow_x(track_idx)
             # 动画位置：从判定线向上飘
             y_offset = effect.get("y", 0)
             y_pos = judge_y - y_offset * (1 - effect["alpha"] * 0.5)
@@ -1097,7 +1153,7 @@ class ChartPlayWindow(QWidget):
 
             tap_pix = self._tap_pixmaps[track_idx] if track_idx < len(self._tap_pixmaps) else None
             if tap_pix:
-                base_w = int(single_track_w * 0.60)
+                base_w = int(single_track_w * 0.60 * self._arrow_scale)
                 base_w = max(22, base_w)
                 target_w = int(base_w * scale)
                 target_h = int(tap_pix.height() * (target_w / max(1, tap_pix.width())))
@@ -1216,7 +1272,7 @@ class ChartPlayWindow(QWidget):
 
     def _draw_stats_panel(self, painter: QPainter, panel_x: int, panel_y: int):
         """绘制玻璃风格统计面板"""
-        panel_w, panel_h = 140, 240
+        panel_w, panel_h = 140, 270
 
         # 外发光
         for i in range(3):
@@ -1322,6 +1378,12 @@ class ChartPlayWindow(QWidget):
         painter.setPen(QColor(100, 110, 130))
         painter.drawText(panel_x + 85, panel_y + 230, f"Max: {self._judge_system.max_combo}")
 
+        # 参数显示（间距和缩放）
+        font_param = create_font(9)
+        painter.setFont(font_param)
+        painter.setPen(QColor(150, 160, 180))
+        painter.drawText(panel_x + 10, panel_y + 255, f"间距: {self._arrow_spacing:.1f}  大小: {self._arrow_scale:.1f}x")
+
     def _draw_footer_tips(self, painter: QPainter, y: int):
         """绘制底部提示"""
         # 玻璃背景条
@@ -1342,7 +1404,7 @@ class ChartPlayWindow(QWidget):
         font_small = create_font(9)
         painter.setFont(font_small)
         painter.setPen(QColor(120, 130, 150))
-        tips = "空格:暂停  R:重播  [/]:调速  Esc:菜单"
+        tips = f"空格:暂停 R:重播 [/]:调速 [+/-]:大小 {self._arrow_scale:.1f}x [,/.]:间距 {self._arrow_spacing:.2f} Esc:菜单"
         painter.drawText(25, y + 18, tips)
 
     def _draw_pause_menu(self, painter: QPainter):

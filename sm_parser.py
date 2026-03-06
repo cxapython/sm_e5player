@@ -543,8 +543,9 @@ def format_seconds(sec: float) -> str:
     if sec < 0:
         sec = 0
     m = int(sec // 60)
-    s = sec - m * 60
-    return f"{m:02d}:{s:05.2f}"
+    s = int(sec % 60)
+    ms = int((sec - int(sec)) * 100)
+    return f"{m:02d}:{s:02d}.{ms:02d}"
 
 
 def find_audio_in_same_dir(chart_path: str) -> Optional[str]:
