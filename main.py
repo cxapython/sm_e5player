@@ -1,473 +1,294 @@
 # -*- coding: utf-8 -*-
 """
-SM Arrow Player - 主程序入口
-基于Python Pygame的E舞成名（StepMania）谱面播放器
+SM Arrow Player - 主程序入口（PyQt6版本）
+基于Python PyQt6的E舞成名（StepMania）谱面播放器
 实现玻璃拟态UI风格的选歌和播放体验
 """
 
 import os
 import sys
-import time
-from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional
 
-# 检查依赖
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("错误: 缺少 pygame 库，请运行: pip install pygame>=2.0.0")
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
+    QStackedWidget, QFileDialog, QMessageBox, QSplashScreen, QLabel
+)
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont
 
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    print("警告: 缺少 Pillow 库，封面显示受限，请运行: pip install Pillow")
-
-# 导入项目模块
 from config_manager import ConfigManager
-from directory_parser import DirectoryParser, SongInfo
 from song_scanner import SongScanner
 from audio_manager import AudioManager, get_audio_manager
-from song_select import SongSelectScene
-from chart_player import ChartPlayer
+from song_select_window import SongSelectWindow
+from chart_play_window import ChartPlayWindow
+from glass_ui_components import GlassColors, create_font, draw_gradient_background
+from directory_parser import SongInfo
 
 
-class GameState(Enum):
-    """游戏状态枚举"""
-    LOADING = "loading"
-    PATH_SELECT = "path_select"
-    SONG_SELECT = "song_select"
-    PLAYING = "playing"
-    ERROR = "error"
-
-
-class Game:
+class MainWindow(QMainWindow):
     """
-    游戏主类
-
-    职责：
-    - 初始化Pygame和核心模块
-    - 管理游戏状态和界面切换
-    - 处理全局事件
-    - 协调各个场景
+    主窗口 - 管理界面切换
     """
 
     def __init__(self):
-        """初始化游戏"""
-        # 检查依赖
-        if not PYGAME_AVAILABLE:
-            raise RuntimeError("缺少必要的依赖库: pygame")
+        super().__init__()
 
         # 配置管理器
-        self.config = ConfigManager()
+        self._config = ConfigManager()
 
         # 音频管理器
-        self.audio_manager = get_audio_manager()
+        self._audio_manager = get_audio_manager()
+        self._audio_manager.set_master_volume(self._config.get_master_volume())
 
         # 歌曲扫描器
-        self.scanner = SongScanner()
+        self._scanner = SongScanner()
+        self._scanner.scan_complete.connect(self._on_scan_complete)
+        self._scanner.scan_progress.connect(self._on_scan_progress)
 
-        # 游戏状态
-        self.state = GameState.LOADING
-        self.previous_state: Optional[GameState] = None
-        self.state_data: Dict[str, Any] = {}
+        # 当前组件
+        self._song_select: Optional[SongSelectWindow] = None
+        self._chart_play: Optional[ChartPlayWindow] = None
 
-        # Pygame
-        self.screen: Optional[pygame.Surface] = None
-        self.clock: Optional[pygame.time.Clock] = None
-        self.fps = self.config.get_fps()
+        # 初始化UI
+        self._setup_ui()
 
-        # 场景
-        self.scenes: Dict[str, Any] = {}
-        self.current_scene: Optional[Any] = None
-
-        # 错误信息
-        self.error_message = ""
-
-        # 运行标志
-        self.running = False
-
-    def init_pygame(self):
-        """初始化Pygame"""
-        # 启用高DPI支持（在init之前设置）
-        import platform
-        if platform.system() == "Darwin":  # macOS
-            os.environ["SDL_HINT_VIDEO_HIGHDPI_DISABLED"] = "0"
-
-        pygame.init()
-        pygame.font.init()
-
-        # 创建窗口
-        window_size = self.config.get_window_size()
-        self.screen = pygame.display.set_mode(
-            window_size,
-            pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF
-        )
-        pygame.display.set_caption("SM Arrow Player")
-
-        # 时钟
-        self.clock = pygame.time.Clock()
-
-        # 设置音频
-        self.audio_manager.set_master_volume(self.config.get_master_volume())
-
-    def run(self):
-        """运行游戏主循环"""
-        try:
-            # 初始化Pygame
-            self.init_pygame()
-
-            # 检查是否首次运行
-            if self.config.is_first_run():
-                self._switch_state(GameState.PATH_SELECT)
-            else:
-                # 加载歌曲
-                self._load_songs()
-                self._switch_state(GameState.SONG_SELECT)
-
-            # 主循环
-            self.running = True
-            while self.running:
-                dt = self.clock.tick(self.fps) / 1000.0
-
-                # 事件处理
-                self._handle_events()
-
-                # 更新
-                self._update(dt)
-
-                # 绘制
-                self._draw()
-
-                pygame.display.flip()
-
-        except Exception as e:
-            print(f"[Game] 运行错误: {e}")
-            import traceback
-            traceback.print_exc()
-            self._show_error(str(e))
-
-        finally:
-            self._cleanup()
-
-    def _handle_events(self):
-        """处理事件"""
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-
-            elif event.type == pygame.VIDEORESIZE:
-                self._handle_resize(event.w, event.h)
-
-            elif event.type == pygame.KEYDOWN:
-                self._handle_keydown(event.key)
-
-            # 传递给当前场景
-            if self.current_scene and hasattr(self.current_scene, 'handle_event'):
-                self.current_scene.handle_event(event)
-
-    def _handle_keydown(self, key):
-        """处理全局按键"""
-        # F11切换全屏
-        if key == pygame.K_F11:
-            self._toggle_fullscreen()
-
-    def _handle_resize(self, width: int, height: int):
-        """处理窗口大小改变"""
-        width = max(800, width)
-        height = max(600, height)
-
-        self.screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
-        self.config.set_window_size(width, height, auto_save=False)
-
-        # 通知当前场景
-        if self.current_scene and hasattr(self.current_scene, 'handle_resize'):
-            self.current_scene.handle_resize(width, height)
-
-    def _toggle_fullscreen(self):
-        """切换全屏"""
-        if self.config.is_fullscreen():
-            pygame.display.set_mode(self.config.get_window_size(), pygame.RESIZABLE)
-            self.config.set_fullscreen(False)
+        # 检查首次运行
+        if self._config.is_first_run():
+            QTimer.singleShot(100, self._show_path_dialog)
         else:
-            pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-            self.config.set_fullscreen(True)
+            # 加载歌曲
+            scan_path = self._config.get_scan_path()
+            if scan_path:
+                self._scanner.set_path(scan_path)
+                self._scanner.start()
 
-    def _update(self, dt: float):
-        """更新游戏状态"""
-        # 更新音频管理器
-        self.audio_manager.update_spectrum()
+    def _setup_ui(self):
+        """设置UI"""
+        # 窗口设置
+        self.setWindowTitle("SM Arrow Player")
+        w, h = self._config.get_window_size()
+        self.setMinimumSize(800, 600)
+        self.resize(w, h)
 
-        # 更新当前场景
-        if self.current_scene and hasattr(self.current_scene, 'update'):
-            self.current_scene.update(dt)
+        # 中央栈widget
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
 
-    def _draw(self):
-        """绘制画面"""
-        if self.current_scene and hasattr(self.current_scene, 'draw'):
-            self.current_scene.draw()
-        elif self.state == GameState.LOADING:
-            self._draw_loading()
-        elif self.state == GameState.PATH_SELECT:
-            self._draw_path_select()
-        elif self.state == GameState.ERROR:
-            self._draw_error()
+        # 创建加载页面
+        self._loading_widget = self._create_loading_widget()
+        self._stack.addWidget(self._loading_widget)
 
-    def _draw_loading(self):
-        """绘制加载界面"""
-        from ui_glass import GlassRenderer, GlassColors
-
-        # 背景
-        GlassRenderer.draw_gradient_background(self.screen, GlassColors.BG_TOP, GlassColors.BG_BOTTOM)
+    def _create_loading_widget(self) -> QWidget:
+        """创建加载页面"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # 加载文字
-        font = GlassRenderer.load_font(24)
-        if font:
-            text = font.render("正在加载...", True, GlassColors.TEXT_WHITE)
-            rect = text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2))
-            self.screen.blit(text, rect)
+        self._loading_label = QLabel("正在加载...")
+        self._loading_label.setFont(create_font(16))
+        self._loading_label.setStyleSheet(f"color: {GlassColors.TEXT_WHITE.name()};")
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._loading_label)
 
-    def _draw_path_select(self):
-        """绘制路径选择界面"""
-        from ui_glass import GlassRenderer, GlassColors
+        # 进度文字
+        self._progress_label = QLabel("")
+        self._progress_label.setFont(create_font(12))
+        self._progress_label.setStyleSheet(f"color: {GlassColors.TEXT_GRAY.name()};")
+        self._progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._progress_label)
 
-        # 背景
-        GlassRenderer.draw_gradient_background(self.screen, GlassColors.BG_TOP, GlassColors.BG_BOTTOM)
+        return widget
 
-        font_title = GlassRenderer.load_font(28)
-        font_normal = GlassRenderer.load_font(18)
+    def paintEvent(self, event):
+        """绘制背景"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # 标题
-        if font_title:
-            title = font_title.render("欢迎使用 SM Arrow Player", True, GlassColors.TEXT_WHITE)
-            title_rect = title.get_rect(centerx=self.screen.get_width() // 2, y=100)
-            self.screen.blit(title, title_rect)
+        # 绘制渐变背景
+        from glass_ui_components import draw_gradient_background, draw_neon_grid
+        from PyQt6.QtCore import QRectF
+        draw_gradient_background(painter, QRectF(0, 0, self.width(), self.height()))
+        draw_neon_grid(painter, QRectF(0, 0, self.width(), self.height()), grid_size=60)
 
-        # 说明
-        if font_normal:
-            desc = font_normal.render("首次运行，请选择歌曲目录", True, GlassColors.TEXT_GRAY)
-            desc_rect = desc.get_rect(centerx=self.screen.get_width() // 2, y=150)
-            self.screen.blit(desc, desc_rect)
+    def _show_path_dialog(self):
+        """显示路径选择对话框"""
+        initial_dir = self._config.get_scan_path()
+        if not initial_dir:
+            initial_dir = os.path.expanduser("~")
 
-        # 提示
-        if font_normal:
-            tip = font_normal.render("点击窗口任意位置选择目录", True, GlassColors.TEXT_DARK)
-            tip_rect = tip.get_rect(centerx=self.screen.get_width() // 2, y=self.screen.get_height() - 100)
-            self.screen.blit(tip, tip_rect)
-
-    def _draw_error(self):
-        """绘制错误界面"""
-        from ui_glass import GlassRenderer, GlassColors
-
-        # 背景
-        GlassRenderer.draw_gradient_background(self.screen, GlassColors.BG_TOP, GlassColors.BG_BOTTOM)
-
-        font_title = GlassRenderer.load_font(24)
-        font_normal = GlassRenderer.load_font(16)
-
-        # 错误标题
-        if font_title:
-            title = font_title.render("出错了", True, (255, 100, 100))
-            title_rect = title.get_rect(centerx=self.screen.get_width() // 2, y=100)
-            self.screen.blit(title, title_rect)
-
-        # 错误信息
-        if font_normal:
-            # 截断错误信息
-            error_text = self.error_message[:100] + "..." if len(self.error_message) > 100 else self.error_message
-            error = font_normal.render(error_text, True, GlassColors.TEXT_GRAY)
-            error_rect = error.get_rect(centerx=self.screen.get_width() // 2, y=150)
-            self.screen.blit(error, error_rect)
-
-        # 提示
-        if font_normal:
-            tip = font_normal.render("按 ESC 退出", True, GlassColors.TEXT_DARK)
-            tip_rect = tip.get_rect(centerx=self.screen.get_width() // 2, y=self.screen.get_height() - 100)
-            self.screen.blit(tip, tip_rect)
-
-    def _show_error(self, message: str):
-        """显示错误"""
-        self.error_message = message
-        self.state = GameState.ERROR
-
-    def _switch_state(self, new_state: GameState, **kwargs):
-        """切换游戏状态"""
-        self.previous_state = self.state
-        self.state = new_state
-        self.state_data = kwargs
-
-        print(f"[Game] 状态切换: {self.previous_state} -> {self.state}")
-
-        if new_state == GameState.PATH_SELECT:
-            self._init_path_select()
-
-        elif new_state == GameState.SONG_SELECT:
-            self._init_song_select()
-
-        elif new_state == GameState.PLAYING:
-            self._start_playing(**kwargs)
-
-    def _init_path_select(self):
-        """初始化路径选择"""
-        pass  # 简化处理，使用文件对话框
-
-    def _init_song_select(self):
-        """初始化选歌界面"""
-        self.current_scene = SongSelectScene(
-            self.screen,
-            self.config,
-            self.audio_manager
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择歌曲目录",
+            initial_dir,
+            QFileDialog.Option.ShowDirsOnly
         )
 
-        # 加载歌曲
-        self.current_scene.load_songs(self.scanner.songs)
+        if path and os.path.isdir(path):
+            self._config.set_scan_path(path)
+            self._config.save()
 
-        # 恢复上次页码
-        last_page = self.config.get_last_page()
-        if last_page > 0:
-            self.current_scene.go_to_page(last_page)
+            # 开始扫描
+            self._scanner.set_path(path)
+            self._scanner.start()
+        else:
+            # 未选择目录，退出
+            QMessageBox.warning(
+                self,
+                "提示",
+                "请选择歌曲目录才能使用本程序"
+            )
+            self.close()
 
-        # 设置回调
-        self.current_scene.set_on_song_select(self._on_song_selected)
+    def _on_scan_progress(self, current: int, total: int):
+        """扫描进度"""
+        self._loading_label.setText(f"正在扫描歌曲... {current}/{total}")
+        self._progress_label.setText(f"已找到 {self._scanner.song_count} 首歌曲")
+
+    def _on_scan_complete(self, songs):
+        """扫描完成"""
+        if not songs:
+            self._loading_label.setText("未找到歌曲")
+            self._progress_label.setText("请选择包含SM文件的歌曲目录")
+            return
+
+        self._loading_label.setText(f"扫描完成，共找到 {len(songs)} 首歌曲")
+
+        # 显示选歌界面
+        QTimer.singleShot(500, lambda: self._show_song_select(songs))
+
+    def _show_song_select(self, songs):
+        """显示选歌界面"""
+        # 清理旧的选歌界面
+        if self._song_select:
+            self._song_select.cleanup()
+            self._stack.removeWidget(self._song_select)
+            self._song_select.deleteLater()
+
+        # 创建新的选歌界面
+        self._song_select = SongSelectWindow(self._config, self._audio_manager)
+        self._song_select.song_selected.connect(self._on_song_selected)
+        self._song_select.load_songs(songs)
+
+        self._stack.addWidget(self._song_select)
+        self._stack.setCurrentWidget(self._song_select)
 
     def _on_song_selected(self, song: SongInfo):
-        """歌曲选择回调"""
+        """歌曲被选择"""
         if not song.has_sm:
             return
 
         # 停止预览
-        self.audio_manager.stop_preview()
+        self._audio_manager.stop_preview()
 
         # 保存状态
-        self.config.set_last_sm_file(song.sm_file)
-        self.config.set_last_page(self.current_scene.current_page)
-        self.config.save()
+        self._config.set_last_sm_file(song.sm_file)
+        if self._song_select:
+            self._config.set_last_page(self._song_select._current_page)
+        self._config.save()
 
-        # 切换到播放状态
-        self._switch_state(GameState.PLAYING, song=song)
-
-    def _start_playing(self, song: SongInfo):
-        """开始播放"""
         # 获取皮肤目录
         app_dir = os.path.dirname(os.path.abspath(__file__))
         skin_dir = os.path.join(app_dir, "noteskin")
 
         if not os.path.isdir(skin_dir):
-            self._show_error(f"皮肤目录不存在：{skin_dir}")
+            QMessageBox.warning(self, "错误", f"皮肤目录不存在：{skin_dir}")
             return
 
-        # 创建播放器
-        try:
-            player = ChartPlayer(
-                song.sm_file,
-                song.audio_file,
-                skin_dir,
-                self.config,
-                self.audio_manager
-            )
+        # 显示播放界面
+        self._show_chart_play(song, skin_dir)
 
-            if not player.load():
-                self._show_error("谱面加载失败")
-                return
+    def _show_chart_play(self, song: SongInfo, skin_dir: str):
+        """显示播放界面"""
+        # 清理旧的播放界面
+        if self._chart_play:
+            self._chart_play.cleanup()
+            self._stack.removeWidget(self._chart_play)
+            self._chart_play.deleteLater()
 
-            player.init_pygame()
+        # 创建新的播放界面
+        self._chart_play = ChartPlayWindow(self._config, self._audio_manager)
+        if not self._chart_play.load_chart(song.sm_file, song.audio_file, skin_dir):
+            QMessageBox.warning(self, "错误", "谱面加载失败")
+            return
 
-            # 运行播放器
-            end_reason = player.run()
+        self._chart_play.back_requested.connect(self._on_play_back)
+        self._stack.addWidget(self._chart_play)
+        self._stack.setCurrentWidget(self._chart_play)
 
-            # 播放结束，返回选歌
-            self._return_to_song_select()
+        # 自动开始
+        self._chart_play.start()
 
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self._show_error(f"播放失败：{str(e)}")
+    def _on_play_back(self):
+        """从播放界面返回"""
+        # 清理播放界面
+        if self._chart_play:
+            self._chart_play.cleanup()
+            self._stack.removeWidget(self._chart_play)
+            self._chart_play.deleteLater()
+            self._chart_play = None
 
-    def _return_to_song_select(self):
-        """返回选歌界面"""
-        # 重新初始化Pygame（播放器可能已退出）
-        self.init_pygame()
+        # 返回选歌界面
+        if self._song_select:
+            self._stack.setCurrentWidget(self._song_select)
 
-        # 切换到选歌状态
-        self._switch_state(GameState.SONG_SELECT)
-
-    def _load_songs(self):
-        """加载歌曲列表"""
-        scan_path = self.config.get_scan_path()
-        if scan_path:
-            self.scanner.scan_path = scan_path
-            self.scanner.scan()
-
-    def _show_path_dialog(self) -> Optional[str]:
-        """显示路径选择对话框"""
-        # 使用pygame实现简单的路径输入
-        # 或者使用tkinter的文件对话框
-        try:
-            import tkinter.filedialog as fd
-            import tkinter as tk
-
-            root = tk.Tk()
-            root.withdraw()
-
-            path = fd.askdirectory(
-                title="选择歌曲目录",
-                initialdir=self.config.get_scan_path() or os.path.expanduser("~")
-            )
-
-            root.destroy()
-            return path if path else None
-
-        except Exception as e:
-            print(f"[Game] 文件对话框失败: {e}")
-            return None
-
-    def _cleanup(self):
-        """清理资源"""
+    def closeEvent(self, event):
+        """关闭事件"""
         # 保存配置
-        self.config.save()
+        self._config.set_window_size(self.width(), self.height())
+        self._config.save()
 
-        # 清理音频
-        self.audio_manager.cleanup()
+        # 清理资源
+        if self._song_select:
+            self._song_select.cleanup()
 
-        # 退出Pygame
-        try:
-            pygame.quit()
-        except Exception:
-            pass
+        if self._chart_play:
+            self._chart_play.cleanup()
+
+        self._audio_manager.cleanup()
+
+        event.accept()
+
+    def keyPressEvent(self, event):
+        """键盘事件"""
+        # F11切换全屏
+        if event.key() == Qt.Key.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        else:
+            super().keyPressEvent(event)
 
 
 def main():
     """程序入口"""
     # 检查Python版本
-    if sys.version_info < (3, 8):
-        print("错误: 需要Python 3.8或更高版本")
+    if sys.version_info < (3, 9):
+        print("错误: 需要Python 3.9或更高版本")
         sys.exit(1)
+
+    # PyQt6默认启用高DPI，无需手动设置
+    # 创建应用
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    # 设置全局字体
+    font = create_font(12)
+    app.setFont(font)
 
     # 打印欢迎信息
     print("=" * 50)
-    print("SM Arrow Player")
-    print("E舞成名谱面播放器 - Python Pygame版")
+    print("SM Arrow Player (PyQt6)")
+    print("E舞成名谱面播放器")
     print("=" * 50)
 
-    # 创建游戏实例
-    game = Game()
+    # 创建主窗口
+    window = MainWindow()
+    window.show()
 
-    # 检查首次运行
-    if game.config.is_first_run():
-        # 显示路径选择
-        path = game._show_path_dialog()
-        if path and os.path.isdir(path):
-            game.config.set_scan_path(path)
-            game.config.save()
-        else:
-            print("未选择目录，程序退出")
-            sys.exit(0)
-
-    # 运行游戏
-    game.run()
+    # 运行应用
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
