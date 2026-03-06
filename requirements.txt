@@ -1,0 +1,7 @@
+# SM Arrow Player - PyQt6 Dependencies
+# Python 3.11+
+
+PyQt6>=6.4.0
+PyQt6-Qt6>=6.4.0
+PyQt6-sip>=13.4.0
+Pillow>=9.0.0
