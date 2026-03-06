@@ -399,7 +399,8 @@ class ChartPlayWindow(QWidget):
                 if result:
                     self._judge_light.trigger(track_idx)
                     self._judge_display.show(result)
-                    self._hit_effect.add(idx=0, track=track_idx)  # 添加命中效果
+                    # 触发命中效果（使用当前时间最近的箭头索引）
+                    self._hit_effect.trigger(arrow_idx=0, track_idx=track_idx)
             event.accept()
             return
 
