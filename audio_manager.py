@@ -107,6 +107,10 @@ class AudioManager(QObject):
         """设置音乐位置（秒）"""
         self._music_player.setPosition(int(position * 1000))
 
+    def set_music_speed(self, speed: float):
+        """设置音乐播放速度（0.5, 0.75, 1.0等）"""
+        self._music_player.setPlaybackRate(speed)
+
     def get_music_position(self) -> float:
         """获取音乐位置（秒）"""
         return self._music_player.position() / 1000.0

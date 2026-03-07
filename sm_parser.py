@@ -99,15 +99,27 @@ def remove_comments_whitespace(text: str) -> str:
 
 
 def parse_sm_key_tag(sm_content: str, tag_name: str) -> Optional[str]:
-    """解析SM文件的键值标签，如#TITLE、#OFFSET"""
+    """
+    解析SM文件的键值标签，如#TITLE、#OFFSET
+
+    注意：SM文件的标签可能不以分号结尾，因此需要同时支持：
+    1. 分号结尾：#TITLE:Song Name;
+    2. 行尾结尾：#BPMS:0.000=110.000,190.000=110.000（无分号）
+    """
+    # 首先尝试匹配到行尾（更安全，避免跨越多行匹配到错误的分号）
     match = re.search(
-        rf"#{re.escape(tag_name)}:(.*?);",
+        rf"#{re.escape(tag_name)}:([^\n]+)",
         sm_content,
-        flags=re.IGNORECASE | re.DOTALL
+        flags=re.IGNORECASE
     )
-    if not match:
-        return None
-    return match.group(1).strip()
+    if match:
+        value = match.group(1).strip()
+        # 如果值以分号结尾，去掉分号
+        if value.endswith(';'):
+            value = value[:-1].strip()
+        return value
+
+    return None
 
 
 def parse_sm_bpms(bpms_text: str) -> List[Tuple[float, float]]:

@@ -113,6 +113,11 @@ class ChartPlayWindow(QWidget):
         # 滚动速度
         self._scroll_speed = config.get_scroll_speed()
 
+        # 播放速度（慢放功能）
+        self._playback_speed = 1.0
+        self._playback_speeds = [1.0, 0.75, 0.5]  # 可选速度
+        self._playback_speed_index = 0
+
         # 箭头/判定区缩放比例（可通过+/-调整）
         self._arrow_scale = 1.0
         # 箭头间距压缩比例（0.3-1.2，越小越紧凑，基于箭头大小的倍数）
@@ -292,7 +297,8 @@ class ChartPlayWindow(QWidget):
         self._elapsed_timer.start()
         self._game_timer.start(16)  # ~60fps
 
-        # 播放音频
+        # 设置音频速度并播放
+        self._audio_manager.set_music_speed(self._playback_speed)
         if self._audio_path:
             audio_start = max(0.0, self._current_sec - self._chart_offset)
             self._audio_manager.play_music(start_pos=audio_start)
@@ -317,8 +323,9 @@ class ChartPlayWindow(QWidget):
 
         self._is_playing = True
         self._game_state = GameState.PLAYING
-        self._start_time = time.perf_counter() - self._pause_time
+        self._start_time = time.perf_counter() - self._pause_time / self._playback_speed
         self._game_timer.start(16)
+        self._audio_manager.set_music_speed(self._playback_speed)
         self._audio_manager.resume_music()
 
     def restart(self):
@@ -328,6 +335,11 @@ class ChartPlayWindow(QWidget):
         self._is_playing = False
         self._game_state = GameState.READY
         self._game_timer.stop()
+
+        # 重置播放速度
+        self._playback_speed = 1.0
+        self._playback_speed_index = 0
+        self._audio_manager.set_music_speed(1.0)
 
         # 重置判定系统
         self._judge_system.reset()
@@ -347,6 +359,24 @@ class ChartPlayWindow(QWidget):
 
         self.update()
 
+    def _seek_to(self, new_sec: float):
+        """跳转到指定时间"""
+        new_sec = max(0.0, min(self._total_sec, new_sec))
+        self._current_sec = new_sec
+        self._pause_time = new_sec
+
+        # 更新播放时间基准
+        if self._is_playing:
+            self._start_time = time.perf_counter() - new_sec / self._playback_speed
+            # 同步音频位置
+            audio_pos = max(0.0, new_sec + self._chart_offset)
+            self._audio_manager.set_music_position(audio_pos)
+
+        # 重置判定系统（跳转后需要重新判定）
+        self._judge_system.reset()
+
+        self.update()
+
     def _update_game(self):
         """更新游戏状态"""
         dt = self._elapsed_timer.elapsed() / 1000.0
@@ -358,8 +388,8 @@ class ChartPlayWindow(QWidget):
         self._judge_display.update(dt)
 
         if self._game_state == GameState.PLAYING:
-            # 更新时间
-            self._current_sec = time.perf_counter() - self._start_time
+            # 更新时间（应用播放速度）
+            self._current_sec = (time.perf_counter() - self._start_time) * self._playback_speed
 
             # 更新血条自动回血
             self._judge_system.update_health_regen(dt, self._current_sec)
@@ -482,10 +512,32 @@ class ChartPlayWindow(QWidget):
             event.accept()
             return
 
-        # 左箭头键 - 返回选歌（全局）
+        # 快退/快进（左/右箭头）
         elif key == Qt.Key.Key_Left:
-            if self._game_state in (GameState.READY, GameState.PLAYING, GameState.PAUSED, GameState.FINISHED, GameState.GAME_OVER):
-                self.back_requested.emit()
+            if self._game_state in (GameState.PAUSED, GameState.READY, GameState.PLAYING):
+                new_sec = max(0.0, self._current_sec - 2.0)
+                self._seek_to(new_sec)
+            event.accept()
+            return
+
+        elif key == Qt.Key.Key_Right:
+            if self._game_state in (GameState.PAUSED, GameState.READY, GameState.PLAYING):
+                new_sec = min(self._total_sec, self._current_sec + 2.0)
+                self._seek_to(new_sec)
+            event.accept()
+            return
+
+        # 切换播放速度（慢放）
+        elif key == Qt.Key.Key_Slash:
+            if self._game_state in (GameState.READY, GameState.PLAYING, GameState.PAUSED):
+                self._playback_speed_index = (self._playback_speed_index + 1) % len(self._playback_speeds)
+                self._playback_speed = self._playback_speeds[self._playback_speed_index]
+                # 同步音频速度
+                self._audio_manager.set_music_speed(self._playback_speed)
+                # 更新时间基准
+                if self._is_playing:
+                    self._start_time = time.perf_counter() - self._current_sec / self._playback_speed
+                self.update()
             event.accept()
             return
 
@@ -1332,6 +1384,7 @@ class ChartPlayWindow(QWidget):
         painter.setPen(QColor(140, 150, 170))
         params = [
             f"Speed: {int(self._scroll_speed)}",
+            f"Play: {self._playback_speed}x",
             f"Offset: {self._chart_offset:+.2f}s",
         ]
         for i, param in enumerate(params):
@@ -1601,7 +1654,7 @@ class ChartPlayWindow(QWidget):
         font_small = create_font(9)
         painter.setFont(font_small)
         painter.setPen(QColor(120, 130, 150))
-        tips = f"空格:暂停 N:重播 M:自动播放 ←:返回 [/]:调速 [+/-]:大小"
+        tips = "空格:暂停 N:重播 M:自动播放 ←/→:2秒 [/]:箭速 +/-:大小 /:慢放(1x/0.75x/0.5x)"
         painter.drawText(25, y + 18, tips)
 
     def _draw_pause_menu(self, painter: QPainter):
