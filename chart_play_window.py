@@ -365,6 +365,9 @@ class ChartPlayWindow(QWidget):
         self._elapsed_timer.start()
         self._game_timer.start(16)  # ~60fps
 
+        # 确保获取键盘焦点
+        self.setFocus()
+
         # 设置音频速度并播放
         self._audio_manager.set_music_speed(self._playback_speed)
         if self._audio_path:
@@ -528,6 +531,7 @@ class ChartPlayWindow(QWidget):
     def keyPressEvent(self, event):
         """键盘按下事件"""
         key = event.key()
+        print(f"[DEBUG] keyPressEvent: key={key}, game_state={self._game_state}")
 
         # 游戏按键
         if key in self.KEY_MAP:
@@ -661,12 +665,14 @@ class ChartPlayWindow(QWidget):
         # 调整箭头间距 , 和 .
         elif key == Qt.Key.Key_Comma:
             self._arrow_spacing = max(0.3, self._arrow_spacing - 0.1)
+            print(f"[DEBUG] 箭头间距减少: {self._arrow_spacing:.1f}")
             self.update()  # 刷新界面
             event.accept()
             return
 
         elif key == Qt.Key.Key_Period:
             self._arrow_spacing = min(1.2, self._arrow_spacing + 0.1)
+            print(f"[DEBUG] 箭头间距增加: {self._arrow_spacing:.1f}")
             self.update()  # 刷新界面
             event.accept()
             return
