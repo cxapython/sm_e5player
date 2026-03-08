@@ -175,14 +175,17 @@ class MainWindow(QMainWindow):
 
     def _on_song_selected(self, song: SongInfo):
         """歌曲被选择"""
-        if not song.has_sm:
+        # 必须有谱面文件（SM或JSON）
+        if not song.has_chart:
             return
 
         # 停止预览
         self._audio_manager.stop_preview()
 
         # 保存状态
-        self._config.set_last_sm_file(song.sm_file)
+        chart_file = song.sm_file or song.json_file
+        if chart_file:
+            self._config.set_last_sm_file(chart_file)  # 复用同一配置项
         if self._song_select:
             self._config.set_last_page(self._song_select._current_page)
         self._config.save()
@@ -206,9 +209,15 @@ class MainWindow(QMainWindow):
             self._stack.removeWidget(self._chart_play)
             self._chart_play.deleteLater()
 
+        # 确定谱面文件路径（优先SM，其次JSON）
+        chart_file = song.sm_file or song.json_file
+        if not chart_file:
+            QMessageBox.warning(self, "错误", "未找到谱面文件")
+            return
+
         # 创建新的播放界面
         self._chart_play = ChartPlayWindow(self._config, self._audio_manager)
-        if not self._chart_play.load_chart(song.sm_file, song.audio_file, skin_dir):
+        if not self._chart_play.load_chart(chart_file, song.audio_file, skin_dir):
             QMessageBox.warning(self, "错误", "谱面加载失败")
             return
 

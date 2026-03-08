@@ -27,6 +27,7 @@ from glass_ui_components import GlassColors, GlassPanel, GlassButton, create_fon
 from config_manager import ConfigManager
 from audio_manager import AudioManager
 from sm_parser import SmParser, ArrowEvent, TimelineSegment, generate_timeline_segments, build_arrow_events, format_seconds
+from json_parser import JsonParser
 from skin_manager import SkinManager
 from judge_system import JudgeSystem, JudgeResult, JudgeDisplay, JudgeLight, HitEffect
 
@@ -170,12 +171,12 @@ class ChartPlayWindow(QWidget):
         # 无需布局，paintEvent会处理所有绘制
         pass
 
-    def load_chart(self, sm_path: str, audio_path: Optional[str], skin_dir: str) -> bool:
+    def load_chart(self, chart_path: str, audio_path: Optional[str], skin_dir: str) -> bool:
         """
-        加载谱面
+        加载谱面（支持SM和JSON格式）
 
         Args:
-            sm_path: SM文件路径
+            chart_path: 谱面文件路径（SM或JSON）
             audio_path: 音频文件路径
             skin_dir: 皮肤目录
 
@@ -183,10 +184,27 @@ class ChartPlayWindow(QWidget):
             是否成功
         """
         try:
-            self._sm_path = sm_path
+            self._sm_path = chart_path
             self._audio_path = audio_path
             self._skin_dir = skin_dir
 
+            # 检测文件格式
+            is_json = chart_path.lower().endswith('.json')
+
+            if is_json:
+                # 解析JSON文件
+                return self._load_json_chart(chart_path)
+            else:
+                # 解析SM文件
+                return self._load_sm_chart(chart_path)
+
+        except Exception as e:
+            print(f"[ChartPlayWindow] 加载谱面失败: {e}")
+            return False
+
+    def _load_sm_chart(self, sm_path: str) -> bool:
+        """加载SM格式谱面"""
+        try:
             # 解析SM文件
             self._sm_parser = SmParser(tick_per_beat=self._config.get_tick_per_beat())
             chart_info, notes_blocks = self._sm_parser.parse_file(sm_path)
@@ -249,7 +267,57 @@ class ChartPlayWindow(QWidget):
             return True
 
         except Exception as e:
-            print(f"[ChartPlayWindow] 加载谱面失败: {e}")
+            print(f"[ChartPlayWindow] 加载SM谱面失败: {e}")
+            return False
+
+    def _load_json_chart(self, json_path: str) -> bool:
+        """加载JSON格式谱面"""
+        try:
+            # 解析JSON文件
+            json_parser = JsonParser(tick_per_beat=self._config.get_tick_per_beat())
+            chart_info, arrow_events = json_parser.parse_file(json_path)
+
+            # 存储箭头事件
+            self._arrow_events = arrow_events
+
+            # 获取BPM列表
+            self._bpm_list = json_parser.get_bpm_list()
+            if not self._bpm_list:
+                self._bpm_list = [(0.0, 120.0)]
+
+            # 生成时间轴
+            self._timeline_segments = generate_timeline_segments(
+                self._bpm_list,
+                json_parser.tick_per_beat
+            )
+
+            # 计算总时长
+            if self._arrow_events:
+                self._total_sec = self._arrow_events[-1].end_sec
+
+            self._chart_title = chart_info.title or os.path.basename(json_path)
+            self._chart_offset = chart_info.offset
+
+            # 清空SM解析器（JSON不需要）
+            self._sm_parser = None
+
+            # 加载皮肤
+            self._load_skins()
+
+            # 加载封面
+            self._load_banner()
+
+            # 加载音频
+            if self._audio_path and os.path.exists(self._audio_path):
+                self._audio_manager.load_music(self._audio_path)
+
+            self._game_state = GameState.READY
+            return True
+
+        except Exception as e:
+            print(f"[ChartPlayWindow] 加载JSON谱面失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _load_skins(self):

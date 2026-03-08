@@ -59,7 +59,7 @@ class SongScanner(QThread):
 
             # 解析目录
             song_info = DirectoryParser.scan_song_folder(subdir)
-            if song_info and song_info.has_sm:
+            if song_info and song_info.has_chart:
                 self._songs.append(song_info)
 
         # 完成扫描

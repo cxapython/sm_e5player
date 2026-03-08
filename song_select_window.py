@@ -946,10 +946,12 @@ class SongSelectWindow(QMainWindow):
         self._count_label.setText(f"共 {len(self._filtered_songs)} 首")
 
     def _on_song_clicked(self, song: SongInfo):
-        if not song.has_sm:
+        if not song.has_chart:
             return
         self._stop_preview()
-        self._config.set_last_sm_file(song.sm_file)
+        chart_file = song.sm_file or song.json_file
+        if chart_file:
+            self._config.set_last_sm_file(chart_file)  # 复用同一配置项
         self._config.set_last_page(self._current_page)
         self._config.save()
         self.song_selected.emit(song)
