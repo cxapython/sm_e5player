@@ -139,8 +139,8 @@ class AdvancedSongCard(QWidget):
         self._hover_animation.setDuration(250)
         self._hover_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        self.setFixedSize(200, 280)
-        self._cover_rect = QRectF(10, 10, 180, 180)
+        self.setFixedSize(190, 260)
+        self._cover_rect = QRectF(10, 10, 170, 170)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -596,7 +596,7 @@ class SongSelectWindow(QMainWindow):
         # 分页 - 固定4列，根据高度自动计算行数
         self._current_page = 0
         self._items_per_page = 12
-        self._columns = 4  # 固定4列
+        self._columns = 5  # 固定5列
         self._rows = 3
 
         # 筛选
@@ -610,7 +610,13 @@ class SongSelectWindow(QMainWindow):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._start_preview)
 
+        # 触控板手势支持
+        self._swipe_accumulated = 0.0  # 累积滑动距离
+        self._swipe_threshold = 200.0  # 触发翻页的阈值（调大）
+        self._swipe_cooldown = False   # 翻页冷却锁
+
         self._setup_ui()
+        self.grabGesture(Qt.GestureType.PanGesture)  # 启用滑动手势
 
     def _setup_ui(self):
         """设置UI"""
@@ -901,8 +907,8 @@ class SongSelectWindow(QMainWindow):
         self._update_cards()
 
     def _update_layout(self):
-        """更新布局 - 固定4列"""
-        self._columns = 4
+        """更新布局 - 固定5列"""
+        self._columns = 5
         # 根据窗口高度计算行数
         h = self.height()
         if h >= 900:
@@ -1031,6 +1037,133 @@ class SongSelectWindow(QMainWindow):
             self._next_page()
         else:
             super().keyPressEvent(event)
+
+    def event(self, event):
+        """处理事件，包括触控板手势"""
+        # 处理 Qt 手势事件
+        if event.type() == event.Type.Gesture:
+            return self.gestureEvent(event)
+        # 处理 macOS 原生手势
+        if event.type() == event.Type.NativeGesture:
+            return self._handle_native_gesture(event)
+        return super().event(event)
+
+    def _handle_native_gesture(self, event):
+        """处理 macOS 触控板原生手势"""
+        gesture_type = event.gestureType()
+
+        # 水平滑动手势
+        if gesture_type == Qt.NativeGestureType.PanNativeGesture:
+            # 获取水平滑动值
+            delta = event.value()
+
+            # 累积滑动距离（向左滑动为正值，向右滑动为负值）
+            self._swipe_accumulated += delta
+
+            # 达到阈值时触发翻页
+            if self._swipe_accumulated > self._swipe_threshold:
+                self._next_page()
+                self._swipe_accumulated = 0
+                return True
+            elif self._swipe_accumulated < -self._swipe_threshold:
+                self._prev_page()
+                self._swipe_accumulated = 0
+                return True
+
+        # Swipe 手势（双指快速滑动）
+        elif gesture_type == Qt.NativeGestureType.SwipeNativeGesture:
+            swipe_angle = event.value()
+            # swipe_angle 表示滑动方向的角度
+            # 向左滑动: 接近 0 或 2π，向右滑动: 接近 π
+            import math
+            # 归一化角度到 0-2π
+            angle = swipe_angle % (2 * math.pi)
+
+            # 判断滑动方向（允许一定容差）
+            if angle < math.pi / 2 or angle > 3 * math.pi / 2:
+                # 向左滑动 -> 下一页
+                self._next_page()
+                return True
+            else:
+                # 向右滑动 -> 上一页
+                self._prev_page()
+                return True
+
+        return False
+
+    def gestureEvent(self, event):
+        """处理 Qt 手势事件"""
+        for gesture in event.gestures():
+            if gesture.gestureType() == Qt.GestureType.PanGesture:
+                self._handle_pan_gesture(gesture)
+                event.accept()
+                return True
+        return False
+
+    def _handle_pan_gesture(self, gesture):
+        """处理滑动手势"""
+        state = gesture.state()
+        delta = gesture.delta()
+
+        if state == Qt.GestureState.GestureUpdated:
+            # 累积水平滑动距离
+            self._swipe_accumulated += delta.x()
+
+            if self._swipe_accumulated > self._swipe_threshold:
+                self._next_page()
+                self._swipe_accumulated = 0
+            elif self._swipe_accumulated < -self._swipe_threshold:
+                self._prev_page()
+                self._swipe_accumulated = 0
+
+        elif state == Qt.GestureState.GestureFinished:
+            self._swipe_accumulated = 0
+
+        return True
+
+    def wheelEvent(self, event):
+        """处理滚轮事件 - macOS 双指滑动"""
+        # 获取水平滚动量 (macOS 双指水平滑动)
+        delta_x = event.angleDelta().x()
+        delta_y = event.angleDelta().y()
+
+        # 如果正在冷却中，只累积不翻页
+        if self._swipe_cooldown:
+            self._swipe_accumulated += delta_x
+            super().wheelEvent(event)
+            return
+
+        # 累积水平滑动距离
+        if abs(delta_x) > abs(delta_y):  # 水平滑动为主
+            self._swipe_accumulated += delta_x
+
+            # 达到阈值时触发翻页
+            # 向左滑动 delta_x > 0 -> 上一页，向右滑动 delta_x < 0 -> 下一页
+            if self._swipe_accumulated > self._swipe_threshold:
+                self._prev_page()
+                self._swipe_accumulated = 0
+                self._start_swipe_cooldown()
+                event.accept()
+                return
+            elif self._swipe_accumulated < -self._swipe_threshold:
+                self._next_page()
+                self._swipe_accumulated = 0
+                self._start_swipe_cooldown()
+                event.accept()
+                return
+
+        # 垂直滚动交给父类处理
+        super().wheelEvent(event)
+
+    def _start_swipe_cooldown(self):
+        """启动翻页冷却，防止连续翻页"""
+        self._swipe_cooldown = True
+        QTimer.singleShot(300, self._end_swipe_cooldown)
+
+    def _end_swipe_cooldown(self):
+        """结束冷却"""
+        self._swipe_cooldown = False
+        self._swipe_accumulated = 0
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
