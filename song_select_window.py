@@ -689,7 +689,7 @@ class SongSelectWindow(QMainWindow):
         row1.setSpacing(15)
 
         # 标题
-        title = QLabel("SM Arrow Player")
+        title = QLabel("竞速谱面播放器")
         title.setFont(create_font(20, bold=True))
         title.setStyleSheet("color: rgb(240, 240, 250); background: transparent;")
         row1.addWidget(title)

@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self):
         """设置UI"""
         # 窗口设置
-        self.setWindowTitle("SM Arrow Player")
+        self.setWindowTitle("竞速谱面播放器")
         w, h = self._config.get_window_size()
         self.setMinimumSize(800, 600)
         self.resize(w, h)
