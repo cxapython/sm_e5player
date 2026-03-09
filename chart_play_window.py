@@ -1009,8 +1009,11 @@ class ChartPlayWindow(QWidget):
         # 绘制顶部信息栏
         self._draw_header(painter, header_h)
 
-        # 绘制血条
-        self._draw_health_bar(painter, 15, header_h + 10)
+        # 计算判定区中心位置（用于血条定位）
+        judge_center_x = w // 2
+
+        # 绘制血条（在判定区正上方）
+        self._draw_health_bar(painter, judge_center_x, judge_y)
 
         # 绘制右侧统计面板
         self._draw_stats_panel(painter, track_start_x + track_total_w + 15, header_h + 20)
@@ -1561,9 +1564,6 @@ class ChartPlayWindow(QWidget):
         title_text = self._chart_title[:35] + "..." if len(self._chart_title) > 35 else self._chart_title
         painter.drawText(35, 38, title_text)
 
-        # 播放时间 - 使用图片数字或文字
-        self._draw_play_time(painter, 35, 48)
-
         # 状态 - 带颜色指示器
         status_str = "▶ 播放中" if self._is_playing else "⏸ 已暂停"
         status_color = QColor(100, 220, 150) if self._is_playing else QColor(255, 200, 100)
@@ -1602,86 +1602,19 @@ class ChartPlayWindow(QWidget):
         for i, param in enumerate(params):
             painter.drawText(param_x + 10, 32 + i * 18, param)
 
-    def _draw_play_time(self, painter: QPainter, x: int, y: int):
-        """绘制播放时间（使用E5风格图片数字）"""
-        # 计算剩余时间（倒计时格式）
-        remaining_sec = max(0, self._total_sec - self._current_sec)
-
-        # 格式化为 MM:SS（不带毫秒）
-        minutes = int(remaining_sec // 60)
-        seconds = int(remaining_sec % 60)
-        time_str = f"{minutes:02d}{seconds:02d}"  # 不含冒号，4位数字
-
-        # 当前播放时间
-        cur_minutes = int(self._current_sec // 60)
-        cur_seconds = int(self._current_sec % 60)
-        cur_time_str = f"{cur_minutes:02d}{cur_seconds:02d}"
-
-        # 尝试使用图片数字
-        if self._assets and self._assets.is_loaded():
-            # E5风格：大号蓝色数字
-            scale = 0.6
-
-            # 绘制当前时间（蓝色大数字）
-            cur_x = x
-            for i, ch in enumerate(cur_time_str):
-                if ch.isdigit():
-                    pix = self._assets.get_digit(int(ch))
-                    if pix and not pix.isNull():
-                        scaled = pix.scaled(int(pix.width() * scale), int(pix.height() * scale),
-                                            Qt.AspectRatioMode.KeepAspectRatio,
-                                            Qt.TransformationMode.SmoothTransformation)
-                        painter.drawPixmap(cur_x, y, scaled)
-                        cur_x += int(scaled.width() * 0.85)
-                # 在第二位后绘制冒号（MM:SS）
-                if i == 1:
-                    font_colon = create_font(20, bold=True)
-                    painter.setFont(font_colon)
-                    painter.setPen(QColor(100, 200, 255))
-                    painter.drawText(cur_x + 2, y + int(pix.height() * scale * 0.7) if pix else 28, ":")
-                    cur_x += 18
-
-            # 分隔符
-            font_sep = create_font(14, bold=True)
-            painter.setFont(font_sep)
-            painter.setPen(QColor(150, 160, 180))
-            painter.drawText(cur_x + 8, y + 25, "/")
-            cur_x += 28
-
-            # 绘制总时间
-            for i, ch in enumerate(time_str):
-                if ch.isdigit():
-                    pix = self._assets.get_digit(int(ch))
-                    if pix and not pix.isNull():
-                        scaled = pix.scaled(int(pix.width() * scale), int(pix.height() * scale),
-                                            Qt.AspectRatioMode.KeepAspectRatio,
-                                            Qt.TransformationMode.SmoothTransformation)
-                        painter.drawPixmap(cur_x, y, scaled)
-                        cur_x += int(scaled.width() * 0.85)
-                if i == 1:
-                    font_colon = create_font(20, bold=True)
-                    painter.setFont(font_colon)
-                    painter.setPen(QColor(100, 200, 255))
-                    painter.drawText(cur_x + 2, y + int(pix.height() * scale * 0.7) if pix else 28, ":")
-                    cur_x += 18
-        else:
-            # 回退到文字显示
-            font_normal = create_font(18, bold=True)
-            painter.setFont(font_normal)
-            painter.setPen(QColor(100, 200, 255))
-            time_display = f"{cur_minutes:02d}:{cur_seconds:02d} / {minutes:02d}:{seconds:02d}"
-            painter.drawText(x, y + 25, time_display)
-
-    def _draw_health_bar(self, painter: QPainter, x: int, y: int):
-        """绘制血条（使用E5风格图片）"""
+    def _draw_health_bar(self, painter: QPainter, judge_center_x: int, judge_y: int):
+        """绘制血条（使用E5风格图片）- 位于判定区正上方，右侧带美化倒计时圆圈"""
         # 自动播放模式显示提示
         if self._autoplay_mode:
             bar_w = 350
-            bar_h = 30
-            glass_rect = QRectF(x, y, bar_w, bar_h)
+            bar_h = 36
+            # 居中放置
+            bar_x = judge_center_x - bar_w // 2
+            bar_y = judge_y - 80
+            glass_rect = QRectF(bar_x, bar_y, bar_w, bar_h)
             glass_path = QPainterPath()
-            glass_path.addRoundedRect(glass_rect, 8, 8)
-            glass_gradient = QLinearGradient(x, y, x, y + bar_h)
+            glass_path.addRoundedRect(glass_rect, 10, 10)
+            glass_gradient = QLinearGradient(bar_x, bar_y, bar_x, bar_y + bar_h)
             glass_gradient.setColorAt(0, QColor(50, 180, 100, 180))
             glass_gradient.setColorAt(1, QColor(40, 150, 80, 160))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -1689,7 +1622,7 @@ class ChartPlayWindow(QWidget):
             painter.drawPath(glass_path)
             painter.setPen(QPen(QColor(100, 255, 150, 180), 1))
             painter.drawPath(glass_path)
-            font = create_font(12, bold=True)
+            font = create_font(14, bold=True)
             painter.setFont(font)
             painter.setPen(QColor(255, 255, 255))
             painter.drawText(glass_rect, Qt.AlignmentFlag.AlignCenter, "AUTO PLAY")
@@ -1698,77 +1631,138 @@ class ChartPlayWindow(QWidget):
         # 正常模式血条
         health_percent = self._judge_system.get_health_percent()
 
+        # 简化布局：血条 + 倒计时圆圈
+        bar_height = 38         # 血条高度
+        bar_width = 450         # 血条宽度
+        countdown_size = 56     # 倒计时圆圈大小
+        spacing = 15            # 血条与倒计时间距
+
+        # 计算总宽度
+        total_width = bar_width + spacing + countdown_size
+
+        # 居中起始位置
+        bar_x = judge_center_x - total_width // 2
+        bar_y = judge_y - 85    # 血条位于判定线上方
+
         # 尝试使用图片血条（E5风格）
         if self._assets and self._assets.is_loaded():
             # 获取血条图片资源
-            icon_bg = self._assets.blood_bar.get("icon_bg_p1.png")  # 玩家图标背景
-            stage_label = self._assets.blood_bar.get("stage.png")   # STAGE标签
             bg_bar = self._assets.blood_bar.get("bb_s_lb.png")      # 血条背景
             fill_bar = self._assets.blood_bar.get("full_s_l.png")   # 血条填充
 
-            # 目标尺寸
-            icon_size = 50
-            bar_height = 32
-            bar_width = 320
-            total_width = icon_size + bar_width
+            # 血条内容区域
+            bar_content_y = bar_y
 
-            # 绘制玩家图标背景
-            if icon_bg and not icon_bg.isNull():
-                scaled_icon = icon_bg.scaled(icon_size, icon_size,
-                                             Qt.AspectRatioMode.KeepAspectRatio,
-                                             Qt.TransformationMode.SmoothTransformation)
-                painter.drawPixmap(x, y - 5, scaled_icon)
-
-            # 绘制STAGE标签
-            if stage_label and not stage_label.isNull():
-                stage_scale = 0.7
-                scaled_stage = stage_label.scaled(int(stage_label.width() * stage_scale),
-                                                  int(stage_label.height() * stage_scale),
-                                                  Qt.AspectRatioMode.KeepAspectRatio,
-                                                  Qt.TransformationMode.SmoothTransformation)
-                painter.drawPixmap(x + icon_size + 5, y - 12, scaled_stage)
-
-            # 血条位置（图标右侧）
-            bar_x = x + icon_size + 5
-            bar_y = y + 8
+            # 血条外发光效果
+            for i in range(4):
+                glow_rect = QRectF(bar_x - i * 2, bar_content_y - i * 2,
+                                  bar_width + i * 4, bar_height + i * 4)
+                glow_path = QPainterPath()
+                glow_path.addRoundedRect(glow_rect, 12 + i, 12 + i)
+                if health_percent > 0.5:
+                    glow_color = QColor(255, 120, 180, int(30 - i * 7))  # 粉红发光
+                elif health_percent > 0.25:
+                    glow_color = QColor(255, 200, 80, int(25 - i * 6))
+                else:
+                    # 低血量闪烁
+                    pulse = abs(math.sin(time.time() * 6)) * 0.4 + 0.6
+                    glow_color = QColor(int(255 * pulse), int(80 * pulse), int(80 * pulse), int(30 - i * 7))
+                painter.setPen(QPen(glow_color, 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(glow_path)
 
             # 绘制血条背景
             if bg_bar and not bg_bar.isNull():
-                # 按宽度缩放，保持比例
                 bg_scale = bar_width / bg_bar.width()
                 scaled_bg_h = int(bg_bar.height() * bg_scale)
                 scaled_bg = bg_bar.scaled(bar_width, scaled_bg_h,
                                           Qt.AspectRatioMode.IgnoreAspectRatio,
                                           Qt.TransformationMode.SmoothTransformation)
-                painter.drawPixmap(bar_x, bar_y, scaled_bg)
+                painter.drawPixmap(bar_x, bar_content_y, scaled_bg)
+            else:
+                # 无图片时绘制渐变背景
+                bg_rect = QRectF(bar_x, bar_content_y, bar_width, bar_height)
+                bg_path = QPainterPath()
+                bg_path.addRoundedRect(bg_rect, 10, 10)
+                bg_gradient = QLinearGradient(bar_x, bar_content_y, bar_x, bar_content_y + bar_height)
+                bg_gradient.setColorAt(0, QColor(25, 28, 40, 240))
+                bg_gradient.setColorAt(1, QColor(18, 20, 32, 220))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(bg_gradient))
+                painter.drawPath(bg_path)
+                painter.setPen(QPen(QColor(80, 60, 90, 150), 1))
+                painter.drawPath(bg_path)
 
-                # 绘制血量填充（按百分比裁剪）
-                if fill_bar and not fill_bar.isNull() and health_percent > 0:
+            # 绘制血量填充（粉红渐变）
+            if health_percent > 0:
+                fill_w = int(bar_width * health_percent)
+                if fill_bar and not fill_bar.isNull():
+                    # 使用精灵图填充
                     fill_scale = bar_width / fill_bar.width()
                     scaled_fill_h = int(fill_bar.height() * fill_scale)
-
-                    # 裁剪填充图片
                     crop_w = int(fill_bar.width() * health_percent)
                     if crop_w > 0:
                         cropped_fill = fill_bar.copy(0, 0, crop_w, fill_bar.height())
-                        scaled_fill = cropped_fill.scaled(int(bar_width * health_percent), scaled_fill_h,
+                        scaled_fill = cropped_fill.scaled(fill_w, scaled_fill_h,
                                                          Qt.AspectRatioMode.IgnoreAspectRatio,
                                                          Qt.TransformationMode.SmoothTransformation)
-                        # 填充垂直居中于背景
-                        fill_y_offset = (scaled_bg_h - scaled_fill_h) // 2
-                        painter.drawPixmap(bar_x, bar_y + fill_y_offset, scaled_fill)
+                        fill_y_offset = (bar_height - scaled_fill_h) // 2
+                        painter.drawPixmap(bar_x, bar_content_y + fill_y_offset, scaled_fill)
+                else:
+                    # 无图片时绘制粉红渐变填充
+                    fill_rect = QRectF(bar_x + 3, bar_content_y + 3, fill_w - 6, bar_height - 6)
+                    fill_path = QPainterPath()
+                    fill_path.addRoundedRect(fill_rect, 8, 8)
+
+                    # 粉红渐变（高血量）
+                    if health_percent > 0.5:
+                        fill_gradient = QLinearGradient(bar_x, bar_content_y, bar_x, bar_content_y + bar_height)
+                        fill_gradient.setColorAt(0, QColor(255, 140, 200))
+                        fill_gradient.setColorAt(0.3, QColor(255, 100, 170))
+                        fill_gradient.setColorAt(0.7, QColor(255, 80, 150))
+                        fill_gradient.setColorAt(1, QColor(230, 60, 130))
+                    elif health_percent > 0.25:
+                        fill_gradient = QLinearGradient(bar_x, bar_content_y, bar_x, bar_content_y + bar_height)
+                        fill_gradient.setColorAt(0, QColor(255, 220, 80))
+                        fill_gradient.setColorAt(0.5, QColor(255, 200, 60))
+                        fill_gradient.setColorAt(1, QColor(220, 175, 45))
+                    else:
+                        pulse = abs(math.sin(time.time() * 6)) * 0.4 + 0.6
+                        fill_gradient = QLinearGradient(bar_x, bar_content_y, bar_x, bar_content_y + bar_height)
+                        fill_gradient.setColorAt(0, QColor(int(255 * pulse), int(80 * pulse), int(80 * pulse)))
+                        fill_gradient.setColorAt(1, QColor(int(180 * pulse), int(50 * pulse), int(50 * pulse)))
+
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(fill_gradient))
+                    painter.drawPath(fill_path)
+
+                    # 高光效果
+                    highlight_rect = QRectF(bar_x + 4, bar_content_y + 4, fill_w - 8, (bar_height - 10) // 2)
+                    highlight_gradient = QLinearGradient(bar_x + 4, bar_content_y + 4,
+                                                         bar_x + 4, bar_content_y + 4 + (bar_height - 10) // 2)
+                    highlight_gradient.setColorAt(0, QColor(255, 255, 255, 120))
+                    highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+                    painter.fillRect(highlight_rect, QBrush(highlight_gradient))
 
             # 血量百分比文字
-            font = create_font(11, bold=True)
+            font = create_font(15, bold=True)
             painter.setFont(font)
             painter.setPen(QColor(255, 255, 255))
             health_text = f"{int(health_percent * 100)}%"
-            painter.drawText(QRectF(bar_x, bar_y, bar_width, bar_height),
+            painter.drawText(QRectF(bar_x, bar_content_y, bar_width, bar_height),
                            Qt.AlignmentFlag.AlignCenter, health_text)
+
+            # 绘制倒计时圆圈
+            countdown_x = bar_x + bar_width + spacing
+            countdown_y = bar_y + (bar_height - countdown_size) // 2
+            self._draw_countdown_circle(painter, countdown_x, countdown_y, countdown_size)
+
         else:
-            # 回退到绘制血条（无图片时）
-            bar_w = 350
-            bar_h = 25
+            # 回退方案：无图片时的简化版本
+            bar_w = 450
+            bar_h = 38
+            bar_x = judge_center_x - (bar_w + spacing + countdown_size) // 2
+            bar_y_pos = judge_y - 85
             is_danger = health_percent < 0.25
 
             # 危险状态闪烁
@@ -1778,52 +1772,53 @@ class ChartPlayWindow(QWidget):
                 pulse = 1.0
 
             # 外发光
-            for i in range(3):
-                glow_rect = QRectF(x - i*2, y - i*2, bar_w + i*4, bar_h + i*4)
+            for i in range(4):
+                glow_rect = QRectF(bar_x - i * 2, bar_y_pos - i * 2, bar_w + i * 4, bar_h + i * 4)
                 glow_path = QPainterPath()
-                glow_path.addRoundedRect(glow_rect, 12 + i, 12 + i)
+                glow_path.addRoundedRect(glow_rect, 14 + i, 14 + i)
                 if health_percent > 0.5:
-                    glow_color = QColor(100, 255, 150, int((15 - i*5) * pulse))
+                    glow_color = QColor(255, 120, 180, int(25 - i * 6) * pulse)
                 elif health_percent > 0.25:
-                    glow_color = QColor(255, 200, 100, int((15 - i*5) * pulse))
+                    glow_color = QColor(255, 200, 100, int(20 - i * 5) * pulse)
                 else:
-                    glow_color = QColor(255, 100, 100, int((20 - i*6) * pulse))
+                    glow_color = QColor(255, 100, 100, int(25 - i * 6) * pulse)
                 painter.setPen(QPen(glow_color, 1))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPath(glow_path)
 
             # 血条背景
-            bg_rect = QRectF(x, y, bar_w, bar_h)
+            bg_rect = QRectF(bar_x, bar_y_pos, bar_w, bar_h)
             bg_path = QPainterPath()
-            bg_path.addRoundedRect(bg_rect, 10, 10)
-            bg_gradient = QLinearGradient(x, y, x, y + bar_h)
-            bg_gradient.setColorAt(0, QColor(30, 30, 40, 200))
-            bg_gradient.setColorAt(1, QColor(20, 20, 30, 180))
+            bg_path.addRoundedRect(bg_rect, 12, 12)
+            bg_gradient = QLinearGradient(bar_x, bar_y_pos, bar_x, bar_y_pos + bar_h)
+            bg_gradient.setColorAt(0, QColor(25, 28, 40, 240))
+            bg_gradient.setColorAt(1, QColor(18, 20, 32, 220))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(bg_gradient))
             painter.drawPath(bg_path)
-            painter.setPen(QPen(QColor(80, 90, 110, 150), 1))
+            painter.setPen(QPen(QColor(80, 60, 90, 150), 1))
             painter.drawPath(bg_path)
 
-            # 血量填充
+            # 血量填充（粉红渐变）
             if health_percent > 0:
-                fill_w = int((bar_w - 4) * health_percent)
-                fill_rect = QRectF(x + 2, y + 2, fill_w, bar_h - 4)
+                fill_w = int((bar_w - 6) * health_percent)
+                fill_rect = QRectF(bar_x + 3, bar_y_pos + 3, fill_w, bar_h - 6)
                 fill_path = QPainterPath()
-                fill_path.addRoundedRect(fill_rect, 8, 8)
+                fill_path.addRoundedRect(fill_rect, 10, 10)
 
                 if health_percent > 0.5:
-                    fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
-                    fill_gradient.setColorAt(0, QColor(80, 220, 120))
-                    fill_gradient.setColorAt(0.5, QColor(60, 200, 100))
-                    fill_gradient.setColorAt(1, QColor(40, 180, 80))
+                    fill_gradient = QLinearGradient(bar_x, bar_y_pos + 3, bar_x, bar_y_pos + bar_h - 3)
+                    fill_gradient.setColorAt(0, QColor(255, 140, 200))
+                    fill_gradient.setColorAt(0.3, QColor(255, 100, 170))
+                    fill_gradient.setColorAt(0.7, QColor(255, 80, 150))
+                    fill_gradient.setColorAt(1, QColor(230, 60, 130))
                 elif health_percent > 0.25:
-                    fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
+                    fill_gradient = QLinearGradient(bar_x, bar_y_pos + 3, bar_x, bar_y_pos + bar_h - 3)
                     fill_gradient.setColorAt(0, QColor(255, 220, 80))
                     fill_gradient.setColorAt(0.5, QColor(255, 200, 60))
                     fill_gradient.setColorAt(1, QColor(220, 180, 40))
                 else:
-                    fill_gradient = QLinearGradient(x, y + 2, x, y + bar_h - 2)
+                    fill_gradient = QLinearGradient(bar_x, bar_y_pos + 3, bar_x, bar_y_pos + bar_h - 3)
                     fill_gradient.setColorAt(0, QColor(int(255 * pulse), int(80 * pulse), int(80 * pulse)))
                     fill_gradient.setColorAt(0.5, QColor(int(220 * pulse), int(60 * pulse), int(60 * pulse)))
                     fill_gradient.setColorAt(1, QColor(int(180 * pulse), int(40 * pulse), int(40 * pulse)))
@@ -1833,18 +1828,126 @@ class ChartPlayWindow(QWidget):
                 painter.drawPath(fill_path)
 
                 # 高光
-                highlight_rect = QRectF(x + 3, y + 3, fill_w - 2, (bar_h - 6) // 2)
-                highlight_gradient = QLinearGradient(x + 3, y + 3, x + 3, y + 3 + (bar_h - 6) // 2)
-                highlight_gradient.setColorAt(0, QColor(255, 255, 255, 80))
+                highlight_rect = QRectF(bar_x + 4, bar_y_pos + 4, fill_w - 2, (bar_h - 8) // 2)
+                highlight_gradient = QLinearGradient(bar_x + 4, bar_y_pos + 4,
+                                                     bar_x + 4, bar_y_pos + 4 + (bar_h - 8) // 2)
+                highlight_gradient.setColorAt(0, QColor(255, 255, 255, 100))
                 highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
                 painter.fillRect(highlight_rect, QBrush(highlight_gradient))
 
             # 血量文字
-            font = create_font(10, bold=True)
+            font = create_font(15, bold=True)
             painter.setFont(font)
-            health_text = f"HP {int(self._judge_system.health)}"
+            health_text = f"{int(self._judge_system.health)}%"
             painter.setPen(QColor(255, 255, 255))
-            painter.drawText(QRectF(x, y, bar_w, bar_h), Qt.AlignmentFlag.AlignCenter, health_text)
+            painter.drawText(QRectF(bar_x, bar_y_pos, bar_w, bar_h), Qt.AlignmentFlag.AlignCenter, health_text)
+
+            # 绘制倒计时圆圈（无图片版本）
+            countdown_x = bar_x + bar_w + spacing
+            countdown_y = bar_y_pos + (bar_h - countdown_size) // 2
+            self._draw_countdown_circle(painter, countdown_x, countdown_y, countdown_size)
+
+    def _draw_countdown_circle(self, painter: QPainter, x: int, y: int, size: int):
+        """绘制美化倒计时圆圈（位于血条右侧）- 渐变环、内发光效果"""
+        # 计算剩余时间
+        remaining_sec = max(0, self._total_sec - self._current_sec)
+        total_sec = max(1, self._total_sec)
+        progress = remaining_sec / total_sec
+
+        minutes = int(remaining_sec // 60)
+        seconds = int(remaining_sec % 60)
+
+        center_x = x + size // 2
+        center_y = y + size // 2
+        radius = size // 2 - 2
+
+        # 外部发光效果（脉动）
+        pulse = abs(math.sin(time.time() * 2)) * 0.3 + 0.7
+        for i in range(4):
+            glow_alpha = int((35 - i * 8) * pulse)
+            if progress < 0.2:
+                glow_color = QColor(255, 80, 100, glow_alpha)
+            elif progress < 0.4:
+                glow_color = QColor(255, 180, 80, glow_alpha)
+            else:
+                glow_color = QColor(100, 180, 255, glow_alpha)
+            painter.setPen(QPen(glow_color, 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(center_x, center_y), radius + i * 3, radius + i * 3)
+
+        # 圆形背景（深色玻璃风格）
+        bg_gradient = QRadialGradient(center_x, center_y - radius * 0.3, radius * 1.8)
+        bg_gradient.setColorAt(0, QColor(55, 60, 85, 230))
+        bg_gradient.setColorAt(0.5, QColor(35, 40, 60, 240))
+        bg_gradient.setColorAt(1, QColor(20, 25, 40, 250))
+
+        bg_path = QPainterPath()
+        bg_path.addEllipse(QPointF(center_x, center_y), radius, radius)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg_gradient))
+        painter.drawPath(bg_path)
+
+        # 内部边缘阴影
+        inner_shadow = QRadialGradient(center_x, center_y, radius)
+        inner_shadow.setColorAt(0.7, QColor(0, 0, 0, 0))
+        inner_shadow.setColorAt(1, QColor(0, 0, 0, 60))
+        painter.setBrush(QBrush(inner_shadow))
+        painter.drawPath(bg_path)
+
+        # 进度环设置
+        pen_width = 5
+        progress_radius = radius - pen_width // 2 - 4
+
+        # 背景环（深色）
+        painter.setPen(QPen(QColor(30, 35, 50, 180), pen_width))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(center_x, center_y), progress_radius, progress_radius)
+
+        # 进度弧（渐变颜色）
+        if progress < 0.2:
+            # 红色渐变 - 时间紧迫
+            arc_color = QColor(255, 80, 100)
+            arc_glow = QColor(255, 100, 120, 150)
+        elif progress < 0.4:
+            # 橙黄渐变 - 注意
+            arc_color = QColor(255, 200, 80)
+            arc_glow = QColor(255, 220, 100, 150)
+        else:
+            # 青蓝渐变 - 正常
+            arc_color = QColor(80, 200, 255)
+            arc_glow = QColor(100, 220, 255, 150)
+
+        # 绘制进度弧发光
+        start_angle = 90 * 16  # 从顶部开始
+        span_angle = int(-360 * progress * 16)
+
+        # 发光层
+        painter.setPen(QPen(arc_glow, pen_width + 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(QRectF(center_x - progress_radius, center_y - progress_radius,
+                              progress_radius * 2, progress_radius * 2),
+                       start_angle, span_angle)
+
+        # 主进度弧
+        painter.setPen(QPen(arc_color, pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawArc(QRectF(center_x - progress_radius, center_y - progress_radius,
+                              progress_radius * 2, progress_radius * 2),
+                       start_angle, span_angle)
+
+        # 时间文字
+        font = create_font(14, bold=True)
+        painter.setFont(font)
+        painter.setPen(QColor(240, 245, 255))
+        time_str = f"{minutes:01d}:{seconds:02d}"
+        text_rect = QRectF(x, y, size, size)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, time_str)
+
+        # 底部小标签（显示进度百分比）
+        font_tiny = create_font(7)
+        painter.setFont(font_tiny)
+        painter.setPen(QColor(100, 130, 170))
+        percent_str = f"{int(progress * 100)}%"
+        painter.drawText(QRectF(x, y + size - 14, size, 12),
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, percent_str)
 
     def _draw_stats_panel(self, painter: QPainter, panel_x: int, panel_y: int):
         """绘制玻璃风格统计面板"""
