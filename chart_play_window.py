@@ -10,6 +10,7 @@ import math
 from typing import List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QSizePolicy, QApplication
@@ -20,7 +21,8 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QRadialGradient, QPainterPath, QFont, QPixmap, QConicalGradient
+    QRadialGradient, QPainterPath, QFont, QPixmap, QConicalGradient,
+    QImage
 )
 
 from glass_ui_components import GlassColors, GlassPanel, GlassButton, create_font
@@ -31,6 +33,7 @@ from json_parser import JsonParser
 from skin_manager import SkinManager
 from judge_system import JudgeSystem, JudgeResult, JudgeDisplay, JudgeLight, HitEffect
 from sprite_loader import AssetManager, init_assets, get_asset_manager
+from screen_recorder import DefaultScreenRecorder as ScreenRecorder
 
 
 class GameState(Enum):
@@ -146,6 +149,10 @@ class ChartPlayWindow(QWidget):
 
         # 自动播放/录制模式
         self._autoplay_mode = False  # 默认是消耗血条和分数的模式
+
+        # 视频录制（系统级录屏）
+        self._recorder = ScreenRecorder()
+        self._recording_resolution = "原始"
 
         # 封面
         self._banner_pixmap: Optional[QPixmap] = None
@@ -414,6 +421,10 @@ class ChartPlayWindow(QWidget):
 
     def restart(self):
         """重新开始"""
+        # 停止录制
+        if self._recorder.is_recording():
+            self._stop_recording()
+
         self._current_sec = 0.0
         self._pause_time = 0.0
         self._is_playing = False
@@ -442,6 +453,87 @@ class ChartPlayWindow(QWidget):
             self._audio_manager.load_music(self._audio_path)
 
         self.update()
+
+    def _start_recording(self):
+        """开始录制桌面并从头播放"""
+        if self._recorder.is_recording():
+            return
+
+        # 生成输出文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_title = "".join(c for c in self._chart_title if c.isalnum() or c in (' ', '-', '_'))[:50]
+        filename = f"{safe_title}_{timestamp}.mp4"
+
+        # 保存到songs目录
+        if self._sm_path:
+            output_dir = os.path.dirname(self._sm_path)
+        else:
+            output_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(output_dir, filename)
+
+        # 设置分辨率
+        self._recorder.set_resolution(self._recording_resolution)
+
+        # 开始录制桌面
+        if self._recorder.start_desktop(output_path, self._audio_path):
+            print(f"[ChartPlayWindow] 开始录制桌面: {output_path}")
+
+            # 从头开始播放
+            self._current_sec = 0.0
+            self._pause_time = 0.0
+            self._is_playing = False
+
+            # 重置判定系统
+            self._judge_system.reset()
+            self._autoplay_mode = True  # 开启自动播放模式
+            self._judge_system.set_autoplay(True)
+            self._judge_display = JudgeDisplay()
+            self._judge_light = JudgeLight(track_count=5)
+            self._hit_effect = HitEffect()
+
+            # 重置按键状态
+            self._key_pressed = [False] * 5
+
+            # 重置播放速度
+            self._playback_speed = 1.0
+            self._playback_speed_index = 0
+            self._audio_manager.set_music_speed(1.0)
+
+            # 重新加载音频并从头播放
+            if self._audio_path and os.path.exists(self._audio_path):
+                self._audio_manager.stop_music()
+                self._audio_manager.load_music(self._audio_path)
+
+            # 开始播放
+            self._game_state = GameState.PLAYING
+            self.start()
+            print("[ChartPlayWindow] 从头开始播放")
+        else:
+            print("[ChartPlayWindow] 录制启动失败")
+
+    def _stop_recording(self):
+        """停止录制"""
+        if self._recorder.is_recording():
+            success, path, frames = self._recorder.stop()
+            if success:
+                duration = frames / 60.0  # 60fps
+                print(f"[ChartPlayWindow] 录制完成: {os.path.basename(path)} ({duration:.1f}s)")
+            else:
+                print("[ChartPlayWindow] 录制保存失败")
+
+    def _toggle_recording(self):
+        """切换录制状态"""
+        if self._recorder.is_recording():
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _toggle_resolution(self):
+        """切换录制分辨率"""
+        resolutions = ["原始", "1080p", "720p"]
+        current_idx = resolutions.index(self._recording_resolution) if self._recording_resolution in resolutions else 0
+        self._recording_resolution = resolutions[(current_idx + 1) % len(resolutions)]
+        self._recorder.set_resolution(self._recording_resolution)
 
     def _seek_to(self, new_sec: float):
         """跳转到指定时间"""
@@ -524,12 +616,17 @@ class ChartPlayWindow(QWidget):
         self._game_timer.stop()
         self._audio_manager.stop_music()
 
-        # 生成结果
+        # 自动停止录制
+        if self._recorder and self._recorder.is_recording():
+            self._stop_recording()
+
+        # 生成结果（自动播放模式直接给S评级）
+        grade = "S" if self._autoplay_mode else self._judge_system.get_grade()
         self._result = GameResult(
             score=self._judge_system.score,
             max_combo=self._judge_system.max_combo,
             accuracy=self._judge_system.get_accuracy(),
-            grade=self._judge_system.get_grade(),
+            grade=grade,
             perfect=self._judge_system.stats.perfect,
             cool=self._judge_system.stats.cool,
             good=self._judge_system.stats.good,
@@ -711,6 +808,27 @@ class ChartPlayWindow(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
+        # 录制按钮点击（播放或暂停时）
+        if self._game_state in (GameState.PLAYING, GameState.PAUSED):
+            w, h = self.width(), self.height()
+            btn_w, btn_h = 90, 32
+            btn_x = w - btn_w - 20
+            btn_y = 70
+            res_btn_x = btn_x - 70
+            res_btn_w = 60
+
+            # 检查录制按钮
+            record_rect = QRectF(btn_x, btn_y, btn_w, btn_h)
+            if record_rect.contains(event.position()):
+                self._toggle_recording()
+                return
+
+            # 检查分辨率按钮
+            res_rect = QRectF(res_btn_x, btn_y, res_btn_w, btn_h)
+            if res_rect.contains(event.position()):
+                self._toggle_resolution()
+                return
+
         # 暂停菜单点击
         if self._game_state == GameState.PAUSED:
             w, h = self.width(), self.height()
@@ -745,6 +863,10 @@ class ChartPlayWindow(QWidget):
 
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
+        # 录制按钮悬停更新
+        if self._game_state in (GameState.PLAYING, GameState.PAUSED):
+            self.update()
+
         # 暂停菜单悬停效果
         if self._game_state == GameState.PAUSED:
             w, h = self.width(), self.height()
@@ -778,6 +900,8 @@ class ChartPlayWindow(QWidget):
             self._draw_ready(painter)
         elif self._game_state in (GameState.PLAYING, GameState.PAUSED):
             self._draw_game(painter)
+            # 绘制录制按钮和状态（始终显示）
+            self._draw_record_ui(painter)
             if self._game_state == GameState.PAUSED:
                 self._draw_pause_menu(painter)
         elif self._game_state in (GameState.FINISHED, GameState.GAME_OVER):
@@ -936,11 +1060,19 @@ class ChartPlayWindow(QWidget):
             mode_text = "🎮 挑战模式"
         painter.drawText(QRectF(card_x, card_y + 65, card_w, 30), Qt.AlignmentFlag.AlignCenter, mode_text)
 
+        # 录制功能提示
+        font_rec = create_font(11)
+        painter.setFont(font_rec)
+        painter.setPen(QColor(255, 150, 150))
+        painter.drawText(QRectF(card_x, card_y + 90, card_w, 25), Qt.AlignmentFlag.AlignCenter,
+                        "● 支持录制 (播放时点击右上角录制按钮)")
+        hint_y = card_y + 115
+
         # 提示文字
         font_hint = create_font(14)
         painter.setFont(font_hint)
         painter.setPen(QColor(140, 160, 200))
-        painter.drawText(QRectF(card_x, card_y + 100, card_w, 35), Qt.AlignmentFlag.AlignCenter,
+        painter.drawText(QRectF(card_x, hint_y, card_w, 35), Qt.AlignmentFlag.AlignCenter,
                         "按 空格键 开始游戏")
 
         # 模式切换提示
@@ -1708,28 +1840,6 @@ class ChartPlayWindow(QWidget):
         countdown_y = bar_y + (bar_height - countdown_size) // 2
         self._draw_countdown_circle(painter, countdown_x, countdown_y, countdown_size)
 
-        # 自动播放模式提示（显示在血条上方）
-        if self._autoplay_mode:
-            auto_w = 100
-            auto_h = 20
-            auto_x = judge_center_x - auto_w // 2
-            auto_y = bar_y - auto_h - 5
-            auto_rect = QRectF(auto_x, auto_y, auto_w, auto_h)
-            auto_path = QPainterPath()
-            auto_path.addRoundedRect(auto_rect, 6, 6)
-            auto_gradient = QLinearGradient(auto_x, auto_y, auto_x, auto_y + auto_h)
-            auto_gradient.setColorAt(0, QColor(50, 180, 100, 180))
-            auto_gradient.setColorAt(1, QColor(40, 150, 80, 160))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(auto_gradient))
-            painter.drawPath(auto_path)
-            painter.setPen(QPen(QColor(100, 255, 150, 180), 1))
-            painter.drawPath(auto_path)
-            font = create_font(11, bold=True)
-            painter.setFont(font)
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(auto_rect, Qt.AlignmentFlag.AlignCenter, "AUTO PLAY")
-
     def _draw_countdown_circle(self, painter: QPainter, x: int, y: int, size: int):
         """绘制美化倒计时圆圈（位于血条右侧）- 渐变环、内发光效果"""
         # 计算剩余时间
@@ -1831,6 +1941,112 @@ class ChartPlayWindow(QWidget):
         percent_str = f"{int(progress * 100)}%"
         painter.drawText(QRectF(x, y + size - 14, size, 12),
                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, percent_str)
+
+    def _draw_record_ui(self, painter: QPainter):
+        """绘制录制UI（按钮和状态）"""
+        w, h = self.width(), self.height()
+
+        # 按钮位置（右上角）
+        btn_w, btn_h = 90, 32
+        btn_x = w - btn_w - 20
+        btn_y = 70
+
+        # 分辨率切换按钮
+        res_btn_x = btn_x - 70
+        res_btn_w = 60
+
+        # 窗口选择按钮
+        win_btn_x = res_btn_x - 70
+        win_btn_w = 60
+
+        # 检查鼠标位置用于悬停效果
+        mouse_pos = QPointF(self.mapFromGlobal(self.cursor().pos()))
+        record_hover = QRectF(btn_x, btn_y, btn_w, btn_h).contains(mouse_pos)
+        res_hover = QRectF(res_btn_x, btn_y, res_btn_w, btn_h).contains(mouse_pos)
+
+        is_recording = self._recorder.is_recording()
+
+        # 绘制分辨率按钮
+        res_rect = QRectF(res_btn_x, btn_y, res_btn_w, btn_h)
+        res_path = QPainterPath()
+        res_path.addRoundedRect(res_rect, 6, 6)
+        res_gradient = QLinearGradient(res_btn_x, btn_y, res_btn_x, btn_y + btn_h)
+        if res_hover:
+            res_gradient.setColorAt(0, QColor(60, 70, 90, 200))
+            res_gradient.setColorAt(1, QColor(50, 60, 80, 180))
+        else:
+            res_gradient.setColorAt(0, QColor(45, 55, 75, 180))
+            res_gradient.setColorAt(1, QColor(35, 45, 65, 160))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(res_gradient))
+        painter.drawPath(res_path)
+        painter.setPen(QPen(QColor(100, 120, 160, 120), 1))
+        painter.drawPath(res_path)
+
+        font = create_font(10, bold=True)
+        painter.setFont(font)
+        painter.setPen(QColor(180, 190, 210))
+        painter.drawText(res_rect, Qt.AlignmentFlag.AlignCenter, self._recording_resolution)
+
+        # 绘制录制按钮
+        record_rect = QRectF(btn_x, btn_y, btn_w, btn_h)
+        record_path = QPainterPath()
+        record_path.addRoundedRect(record_rect, 6, 6)
+
+        if is_recording:
+            # 录制中 - 红色闪烁
+            pulse = abs(math.sin(time.time() * 4)) * 0.3 + 0.7
+            rec_gradient = QLinearGradient(btn_x, btn_y, btn_x, btn_y + btn_h)
+            rec_gradient.setColorAt(0, QColor(int(200 * pulse), 50, 50, 220))
+            rec_gradient.setColorAt(1, QColor(int(160 * pulse), 30, 30, 200))
+        elif record_hover:
+            rec_gradient = QLinearGradient(btn_x, btn_y, btn_x, btn_y + btn_h)
+            rec_gradient.setColorAt(0, QColor(70, 80, 100, 200))
+            rec_gradient.setColorAt(1, QColor(50, 60, 80, 180))
+        else:
+            rec_gradient = QLinearGradient(btn_x, btn_y, btn_x, btn_y + btn_h)
+            rec_gradient.setColorAt(0, QColor(50, 55, 70, 180))
+            rec_gradient.setColorAt(1, QColor(40, 45, 60, 160))
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(rec_gradient))
+        painter.drawPath(record_path)
+
+        border_color = QColor(220, 80, 80, 180) if is_recording else QColor(100, 120, 160, 120)
+        painter.setPen(QPen(border_color, 1))
+        painter.drawPath(record_path)
+
+        # 按钮文字
+        font = create_font(11, bold=True)
+        painter.setFont(font)
+        if is_recording:
+            painter.setPen(QColor(255, 200, 200))
+            text = "⏹ 停止"
+        else:
+            painter.setPen(QColor(200, 210, 230))
+            text = "● 录制"
+        painter.drawText(record_rect, Qt.AlignmentFlag.AlignCenter, text)
+
+        # 录制时间显示（录制中时显示）
+        if is_recording:
+            rec_time = self._recorder.get_recording_time()
+            mins = int(rec_time // 60)
+            secs = int(rec_time % 60)
+            time_str = f"{mins:02d}:{secs:02d}"
+
+            # 录制指示器（红色闪烁圆点）
+            pulse = abs(math.sin(time.time() * 3)) * 0.5 + 0.5
+            indicator_rect = QRectF(btn_x - 35, btn_y + 8, 10, 10)
+            painter.setBrush(QBrush(QColor(255, int(60 * pulse), int(60 * pulse))))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(indicator_rect)
+
+            # 时间文字
+            font_time = create_font(10, bold=True)
+            painter.setFont(font_time)
+            painter.setPen(QColor(255, 150, 150))
+            painter.drawText(QRectF(btn_x - 100, btn_y + 6, 60, btn_h),
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, time_str)
 
     def _draw_stats_panel(self, painter: QPainter, panel_x: int, panel_y: int):
         """绘制玻璃风格统计面板"""

@@ -5,3 +5,8 @@ PyQt6>=6.4.0
 PyQt6-Qt6>=6.4.0
 PyQt6-sip>=13.4.0
 Pillow>=9.0.0
+
+# macOS ScreenCaptureKit 录屏支持
+pyobjc-core>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-AVFoundation>=10.0
